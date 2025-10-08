@@ -18,7 +18,7 @@ from telegram.constants import ParseMode, ChatType, ChatMemberStatus
 from telegram.error import BadRequest, TelegramError
 
 # Load environment variables
-load_dotenv("Bot_Token.env")
+load_dotenv("bot_token.env")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 # Configure logging
