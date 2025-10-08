@@ -710,7 +710,7 @@ async def show_channel_selection_query(self, query, action: str):
         """Show channel selection for query"""
         await self.show_channel_list(None, query, page=0, action=action)
     
-    async def error_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def error_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle errors"""
         logger.error(f"Exception while handling an update: {context.error}")
         
