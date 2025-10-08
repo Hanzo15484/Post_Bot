@@ -15,6 +15,7 @@ from telegram.ext import (
 from telegram.constants import ParseMode
 from dotenv import load_dotenv
 import os
+import asyncio 
 # Load environment variables
 load_dotenv("bot_token.env")  # Load variables from .env
 BOT_TOKEN = os.getenv("BOT_TOKEN")
