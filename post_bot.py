@@ -262,7 +262,7 @@ async def safe_send_message(chat_id: int, text: str, **kwargs):
             return await application.bot.send_message(chat_id, text, **kwargs)
         raise e
 
-def safe_edit_message(text: str, **kwargs):
+async def safe_edit_message_text(query, text: str, **kwargs):
     """Safely edit message with error handling"""
     try:
         # Truncate text if too long
@@ -273,12 +273,12 @@ def safe_edit_message(text: str, **kwargs):
         if 'parse_mode' not in kwargs:
             kwargs['parse_mode'] = ParseMode.MARKDOWN
         
-        return kwargs['query'].edit_message_text(text, **kwargs)
+        return await query.edit_message_text(text, **kwargs)
     except BadRequest as e:
         if "can't parse entities" in str(e) or "can't find end" in str(e):
             # Retry without Markdown parsing
             kwargs.pop('parse_mode', None)
-            return kwargs['query'].edit_message_text(text, **kwargs)
+            return await query.edit_message_text(text, **kwargs)
         raise e
 
 def create_inline_keyboard(buttons_config: List[List[List[str]]]) -> InlineKeyboardMarkup:
@@ -633,9 +633,9 @@ async def show_start_menu(query):
                 reply_markup=keyboard
             )
         else:
-            await safe_edit_message(
+            await safe_edit_message_text(
+                query,
                 settings['text'],
-                query=query,
                 reply_markup=keyboard
             )
     except Exception as e:
@@ -654,9 +654,9 @@ async def show_help_menu(query):
                 reply_markup=keyboard
             )
         else:
-            await safe_edit_message(
+            await safe_edit_message_text(
+                query,
                 settings['text'],
-                query=query,
                 reply_markup=keyboard
             )
     except Exception as e:
@@ -676,7 +676,8 @@ async def show_settings_menu(query):
         [InlineKeyboardButton("⬅️ Back", callback_data="start")]
     ])
     
-    await safe_edit_message(
+    await safe_edit_message_text(
+        query,
         "⚙️ **Bot Settings Panel**\n\n"
         "Configure your bot's appearance and messages:\n\n"
         "• **Text Messages** - Edit start/help text\n"
@@ -684,7 +685,6 @@ async def show_settings_menu(query):
         "• **Buttons** - Customize inline buttons\n"
         "• **Button Texts** - Manage text display buttons\n\n"
         "Select an option to configure:",
-        query=query,
         reply_markup=keyboard
     )
 
@@ -696,11 +696,11 @@ async def show_button_texts_management(query):
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("⬅️ Back", callback_data="settings")]
         ])
-        await safe_edit_message(
+        await safe_edit_message_text(
+            query,
             "📝 **Button Texts Management**\n\n"
             "No button texts found. Text display buttons will be created automatically "
             "when you use the format: `ButtonText - Text when user click` in button configuration.",
-            query=query,
             reply_markup=keyboard
         )
         return
@@ -723,12 +723,12 @@ async def show_button_texts_management(query):
     keyboard_buttons.append([InlineKeyboardButton("⬅️ Back", callback_data="settings")])
     keyboard = InlineKeyboardMarkup(keyboard_buttons)
     
-    await safe_edit_message(
+    await safe_edit_message_text(
+        query,
         f"📝 **Button Texts Management**\n\n"
         f"**Total Texts:** {len(button_texts)}\n\n"
         f"**Available Texts:**\n" + "\n".join(text_lines) + "\n\n"
         "Click on 🗑️ to delete a button text.",
-        query=query,
         reply_markup=keyboard
     )
 
@@ -749,9 +749,9 @@ async def show_channels_menu(query):
         keyboard_buttons.append([InlineKeyboardButton("⬅️ Back", callback_data="help")])
         keyboard = InlineKeyboardMarkup(keyboard_buttons)
         
-        await safe_edit_message(
+        await safe_edit_message_text(
+            query,
             f"📢 **Connected Channels**\n\nTotal: {len(channels)} channels",
-            query=query,
             reply_markup=keyboard
         )
     except Exception as e:
@@ -770,12 +770,12 @@ async def show_admin_controls(query):
             [InlineKeyboardButton("⬅️ Back", callback_data="help")]
         ])
         
-        await safe_edit_message(
+        await safe_edit_message_text(
+            query,
             f"👮 **Admin Controls**\n\n**Current Admins:**\n{admin_list}\n\n"
             "Use commands to manage admins:\n"
             "• `/add_admin` - Add new admin\n"
             "• `/del_admin` - Remove admin",
-            query=query,
             reply_markup=keyboard
         )
     except Exception as e:
@@ -792,11 +792,11 @@ async def handle_edit_start_text(query):
         [InlineKeyboardButton("❌ Cancel", callback_data="settings")]
     ])
     
-    await safe_edit_message(
+    await safe_edit_message_text(
+        query,
         f"📝 **Edit Start Text**\n\n"
         f"Current text preview:\n`{current_text[:100]}...`\n\n"
         "Send the new start text (supports Markdown):",
-        query=query,
         reply_markup=keyboard
     )
 
@@ -809,11 +809,11 @@ async def handle_edit_help_text(query):
         [InlineKeyboardButton("❌ Cancel", callback_data="settings")]
     ])
     
-    await safe_edit_message(
+    await safe_edit_message_text(
+        query,
         f"📝 **Edit Help Text**\n\n"
         f"Current text preview:\n`{current_text[:100]}...`\n\n"
         "Send the new help text (supports Markdown):",
-        query=query,
         reply_markup=keyboard
     )
 
@@ -863,7 +863,8 @@ async def handle_edit_start_buttons(query):
         [InlineKeyboardButton("❌ Cancel", callback_data="settings")]
     ])
     
-    await safe_edit_message(
+    await safe_edit_message_text(
+        query,
         "🔘 **Edit Start Buttons**\n\n"
         "**Button Format Guide:**\n"
         "```\n"
@@ -881,7 +882,6 @@ async def handle_edit_start_buttons(query):
         "• Use `|` for same row\n"
         "• New line for new row\n\n"
         "Send new button configuration:",
-        query=query,
         reply_markup=keyboard
     )
 
@@ -893,7 +893,8 @@ async def handle_edit_help_buttons(query):
         [InlineKeyboardButton("❌ Cancel", callback_data="settings")]
     ])
     
-    await safe_edit_message(
+    await safe_edit_message_text(
+        query,
         "🔘 **Edit Help Buttons**\n\n"
         "**Button Format Guide:**\n"
         "```\n"
@@ -911,7 +912,6 @@ async def handle_edit_help_buttons(query):
         "• Use `|` for same row\n"
         "• New line for new row\n\n"
         "Send new button configuration:",
-        query=query,
         reply_markup=keyboard
     )
 
@@ -1142,7 +1142,7 @@ async def forward_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         message = update.message
         
-        # Check if message is forwarded from a channel
+        # Check if message is forwarded from a channel using the correct attribute
         if not message.forward_from_chat or message.forward_from_chat.type != ChatType.CHANNEL:
             await update.message.reply_text("❌ Please forward a message from a channel.")
             return
