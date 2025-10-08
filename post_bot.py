@@ -1,14 +1,21 @@
 import logging
 import os
 import json
-import asyncio
+import re
 from typing import Dict, List, Optional, Any
 from dataclasses import dataclass, asdict
 from enum import Enum
 from dotenv import load_dotenv
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
-from telegram.constants import ParseMode
+from telegram import (
+    Update, InlineKeyboardButton, InlineKeyboardMarkup, 
+    InputMediaPhoto, Message, Chat, ChatMember, ChatPermissions
+)
+from telegram.ext import (
+    Application, CommandHandler, CallbackQueryHandler, 
+    MessageHandler, filters, ContextTypes
+)
+from telegram.constants import ParseMode, ChatType, ChatMemberStatus
+from telegram.error import BadRequest, TelegramError
 
 # Load environment variables
 load_dotenv("bot_token.env")
@@ -30,12 +37,14 @@ class Channel:
     chat_id: int
     title: str
     username: str = ""
+    invite_link: str = ""
 
 @dataclass
 class PostDraft:
     channel_id: int = None
     content: str = ""
     buttons: List[List[Dict]] = None
+    message_id: int = None
 
 @dataclass
 class BotSettings:
@@ -49,6 +58,12 @@ class UserState(Enum):
     AWAITING_CHANNEL_SEARCH = "awaiting_channel_search"
     AWAITING_ADMIN_USERNAME = "awaiting_admin_username"
     AWAITING_DEL_ADMIN_USERNAME = "awaiting_del_admin_username"
+    AWAITING_START_TEXT = "awaiting_start_text"
+    AWAITING_HELP_TEXT = "awaiting_help_text"
+    AWAITING_START_BUTTONS = "awaiting_start_buttons"
+    AWAITING_HELP_BUTTONS = "awaiting_help_buttons"
+    AWAITING_START_IMAGE = "awaiting_start_image"
+    AWAITING_HELP_IMAGE = "awaiting_help_image"
 
 class Database:
     def __init__(self):
@@ -57,7 +72,14 @@ class Database:
             "channels": {},
             "settings": {
                 "start_message": {
-                    "text": "🤖 Welcome to the Advanced Telegram Bot!\n\nUse the buttons below to navigate:",
+                    "text": "🤖 **Welcome to Advanced Telegram Bot!**\n\n"
+                           "I'm a high-performance bot for managing channels and posting content.\n\n"
+                           "**Features:**\n"
+                           "• Channel Management\n"
+                           "• Scheduled Posting\n"
+                           "• Media Support\n"
+                           "• Admin Controls\n\n"
+                           "Use the buttons below to get started:",
                     "image": None,
                     "buttons": [
                         [["🔹 Help", "help"]],
@@ -68,6 +90,7 @@ class Database:
                 },
                 "help_message": {
                     "text": "📖 **Bot Help Guide**\n\n"
+                           "**Available Commands:**\n"
                            "• /start - Start the bot\n"
                            "• /help - Show this help message\n"
                            "• /addch - Add a channel (Admin only)\n"
@@ -76,7 +99,12 @@ class Database:
                            "• /edit_post - Edit existing post (Admin only)\n"
                            "• /add_admin - Add new admin (Owner only)\n"
                            "• /del_admin - Remove admin (Owner only)\n"
-                           "• /settings - Configure bot (Owner only)",
+                           "• /settings - Configure bot (Owner only)\n\n"
+                           "**Admin Features:**\n"
+                           "• Add/remove channels\n"
+                           "• Create and schedule posts\n"
+                           "• Edit existing posts\n"
+                           "• Manage bot settings",
                     "image": None,
                     "buttons": [
                         [["⬅️ Back to Start", "start"]],
@@ -95,7 +123,6 @@ class Database:
             if os.path.exists(DATABASE_FILE):
                 with open(DATABASE_FILE, 'r', encoding='utf-8') as f:
                     loaded_data = json.load(f)
-                    # Merge loaded data with default structure
                     self._deep_update(self.data, loaded_data)
                 logger.info("Database loaded successfully")
             else:
@@ -181,14 +208,15 @@ class Database:
 db = Database()
 user_states: Dict[int, UserState] = {}
 post_drafts: Dict[int, PostDraft] = {}
+edit_sessions: Dict[int, Dict] = {}
 
 # Create application with optimized timeouts
 application = (Application.builder()
     .token(BOT_TOKEN)
     .read_timeout(10)
-    .write_timeout(20)  
-    .connect_timeout(15)
-    .pool_timeout(15)
+    .write_timeout(15)  
+    .connect_timeout(10)
+    .pool_timeout(10)
     .build())
 
 # Utility functions
@@ -197,6 +225,17 @@ def is_admin(user_id: int) -> bool:
 
 def is_owner(user_id: int) -> bool:
     return user_id == OWNER_ID
+
+async def safe_send_message(chat_id: int, text: str, **kwargs):
+    """Safely send message with error handling"""
+    try:
+        return await application.bot.send_message(chat_id, text, **kwargs)
+    except BadRequest as e:
+        if "can't parse entities" in str(e):
+            # Retry without Markdown parsing
+            kwargs.pop('parse_mode', None)
+            return await application.bot.send_message(chat_id, text, **kwargs)
+        raise e
 
 def create_inline_keyboard(buttons_config: List[List[List[str]]]) -> InlineKeyboardMarkup:
     """Create inline keyboard from button configuration"""
@@ -207,6 +246,17 @@ def create_inline_keyboard(buttons_config: List[List[List[str]]]) -> InlineKeybo
             if len(button) == 2:
                 text, callback_data = button
                 keyboard_row.append(InlineKeyboardButton(text, callback_data=callback_data))
+        if keyboard_row:
+            keyboard.append(keyboard_row)
+    return InlineKeyboardMarkup(keyboard)
+
+def create_url_keyboard(buttons_config: List[List[Dict]]) -> InlineKeyboardMarkup:
+    """Create inline keyboard with URL buttons"""
+    keyboard = []
+    for row in buttons_config:
+        keyboard_row = []
+        for button in row:
+            keyboard_row.append(InlineKeyboardButton(button["text"], url=button["url"]))
         if keyboard_row:
             keyboard.append(keyboard_row)
     return InlineKeyboardMarkup(keyboard)
@@ -230,96 +280,169 @@ def parse_buttons(button_text: str) -> List[List[Dict]]:
     
     return buttons
 
+def escape_markdown(text: str) -> str:
+    """Escape Markdown special characters"""
+    escape_chars = r'_*[]()~`>#+-=|{}.!'
+    return ''.join(['\\' + char if char in escape_chars else char for char in text])
+
 # Command Handlers
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /start command"""
-    settings = db.get_settings().start_message
-    keyboard = create_inline_keyboard(settings['buttons'])
-    
-    await update.message.reply_text(
-        settings['text'],
-        reply_markup=keyboard,
-        parse_mode=ParseMode.MARKDOWN
-    )
+    try:
+        settings = db.get_settings().start_message
+        keyboard = create_inline_keyboard(settings['buttons'])
+        
+        if settings.get('image'):
+            await update.message.reply_photo(
+                photo=settings['image'],
+                caption=settings['text'],
+                reply_markup=keyboard,
+                parse_mode=ParseMode.MARKDOWN
+            )
+        else:
+            await safe_send_message(
+                update.effective_chat.id,
+                settings['text'],
+                reply_markup=keyboard,
+                parse_mode=ParseMode.MARKDOWN
+            )
+    except Exception as e:
+        logger.error(f"Error in start_command: {e}")
+        await update.message.reply_text("❌ An error occurred. Please try again.")
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /help command"""
-    settings = db.get_settings().help_message
-    keyboard = create_inline_keyboard(settings['buttons'])
-    
-    await update.message.reply_text(
-        settings['text'],
-        reply_markup=keyboard,
-        parse_mode=ParseMode.MARKDOWN
-    )
+    try:
+        settings = db.get_settings().help_message
+        keyboard = create_inline_keyboard(settings['buttons'])
+        
+        if settings.get('image'):
+            await update.message.reply_photo(
+                photo=settings['image'],
+                caption=settings['text'],
+                reply_markup=keyboard,
+                parse_mode=ParseMode.MARKDOWN
+            )
+        else:
+            await safe_send_message(
+                update.effective_chat.id,
+                settings['text'],
+                reply_markup=keyboard,
+                parse_mode=ParseMode.MARKDOWN
+            )
+    except Exception as e:
+        logger.error(f"Error in help_command: {e}")
+        await update.message.reply_text("❌ An error occurred. Please try again.")
 
 async def add_channel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /addch command - admin only"""
-    if not is_admin(update.effective_user.id):
-        await update.message.reply_text("❌ Admin access required.")
-        return
-    
-    user_states[update.effective_user.id] = UserState.AWAITING_CHANNEL_FORWARD
-    await update.message.reply_text("📨 Please forward any message from the channel you want to add.")
+    try:
+        if not is_admin(update.effective_user.id):
+            await update.message.reply_text("❌ Admin access required.")
+            return
+        
+        user_states[update.effective_user.id] = UserState.AWAITING_CHANNEL_FORWARD
+        await update.message.reply_text(
+            "📨 Please forward any message from the channel you want to add.\n\n"
+            "**Requirements:**\n"
+            "• Bot must be admin in the channel\n"
+            "• Bot must have post permissions\n"
+            "• Forward any message from the target channel"
+        )
+    except Exception as e:
+        logger.error(f"Error in add_channel_command: {e}")
+        await update.message.reply_text("❌ An error occurred. Please try again.")
 
 async def post_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /post command - admin only"""
-    if not is_admin(update.effective_user.id):
-        await update.message.reply_text("❌ Admin access required.")
-        return
-    
-    channels = db.get_channels()
-    if not channels:
-        await update.message.reply_text("❌ No channels added yet. Use /addch to add channels.")
-        return
-    
-    await show_channel_selection(update, context, "post")
+    try:
+        if not is_admin(update.effective_user.id):
+            await update.message.reply_text("❌ Admin access required.")
+            return
+        
+        channels = db.get_channels()
+        if not channels:
+            await update.message.reply_text("❌ No channels added yet. Use /addch to add channels.")
+            return
+        
+        await show_channel_selection(update, context, "post")
+    except Exception as e:
+        logger.error(f"Error in post_command: {e}")
+        await update.message.reply_text("❌ An error occurred. Please try again.")
 
 async def channels_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /channels command - admin only"""
-    if not is_admin(update.effective_user.id):
-        await update.message.reply_text("❌ Admin access required.")
-        return
-    
-    await show_channel_list(update, context)
+    try:
+        if not is_admin(update.effective_user.id):
+            await update.message.reply_text("❌ Admin access required.")
+            return
+        
+        await show_channel_list(update, context)
+    except Exception as e:
+        logger.error(f"Error in channels_command: {e}")
+        await update.message.reply_text("❌ An error occurred. Please try again.")
 
 async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /settings command - owner only"""
-    if not is_owner(update.effective_user.id):
-        await update.message.reply_text("❌ Owner access required.")
-        return
-    
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📝 Edit Start Text", callback_data="edit_start_text")],
-        [InlineKeyboardButton("📝 Edit Help Text", callback_data="edit_help_text")],
-        [InlineKeyboardButton("🔘 Edit Start Buttons", callback_data="edit_start_buttons")],
-        [InlineKeyboardButton("🔘 Edit Help Buttons", callback_data="edit_help_buttons")],
-        [InlineKeyboardButton("⬅️ Back", callback_data="start")]
-    ])
-    
-    await update.message.reply_text(
-        "⚙️ **Bot Settings**\n\nConfigure your bot messages and appearance:",
-        reply_markup=keyboard,
-        parse_mode=ParseMode.MARKDOWN
-    )
+    try:
+        if not is_owner(update.effective_user.id):
+            await update.message.reply_text("❌ Owner access required.")
+            return
+        
+        await show_settings_menu_from_command(update)
+    except Exception as e:
+        logger.error(f"Error in settings_command: {e}")
+        await update.message.reply_text("❌ An error occurred. Please try again.")
 
 async def add_admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /add_admin command - owner only"""
-    if not is_owner(update.effective_user.id):
-        await update.message.reply_text("❌ Owner access required.")
-        return
-    
-    user_states[update.effective_user.id] = UserState.AWAITING_ADMIN_USERNAME
-    await update.message.reply_text("👮 Send the user ID of the new admin:")
+    try:
+        if not is_owner(update.effective_user.id):
+            await update.message.reply_text("❌ Owner access required.")
+            return
+        
+        user_states[update.effective_user.id] = UserState.AWAITING_ADMIN_USERNAME
+        await update.message.reply_text("👮 Send the user ID of the new admin:")
+    except Exception as e:
+        logger.error(f"Error in add_admin_command: {e}")
+        await update.message.reply_text("❌ An error occurred. Please try again.")
 
 async def del_admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /del_admin command - owner only"""
-    if not is_owner(update.effective_user.id):
-        await update.message.reply_text("❌ Owner access required.")
-        return
+    try:
+        if not is_owner(update.effective_user.id):
+            await update.message.reply_text("❌ Owner access required.")
+            return
+        
+        user_states[update.effective_user.id] = UserState.AWAITING_DEL_ADMIN_USERNAME
+        await update.message.reply_text("🗑️ Send the user ID of the admin to remove:")
+    except Exception as e:
+        logger.error(f"Error in del_admin_command: {e}")
+        await update.message.reply_text("❌ An error occurred. Please try again.")
+
+# Settings Menu Handlers
+async def show_settings_menu_from_command(update: Update):
+    """Show settings menu from command"""
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📝 Edit Start Text", callback_data="edit_start_text")],
+        [InlineKeyboardButton("📝 Edit Help Text", callback_data="edit_help_text")],
+        [InlineKeyboardButton("🖼️ Change Start Image", callback_data="edit_start_image")],
+        [InlineKeyboardButton("🖼️ Change Help Image", callback_data="edit_help_image")],
+        [InlineKeyboardButton("🔘 Edit Start Buttons", callback_data="edit_start_buttons")],
+        [InlineKeyboardButton("🔘 Edit Help Buttons", callback_data="edit_help_buttons")],
+        [InlineKeyboardButton("⬅️ Back to Start", callback_data="start")]
+    ])
     
-    user_states[update.effective_user.id] = UserState.AWAITING_DEL_ADMIN_USERNAME
-    await update.message.reply_text("🗑️ Send the user ID of the admin to remove:")
+    await update.message.reply_text(
+        "⚙️ **Bot Settings Panel**\n\n"
+        "Configure your bot's appearance and messages:\n\n"
+        "• **Text Messages** - Edit start/help text\n"
+        "• **Images** - Add/change images for messages\n"
+        "• **Buttons** - Customize inline buttons\n\n"
+        "Select an option to configure:",
+        reply_markup=keyboard,
+        parse_mode=ParseMode.MARKDOWN
+    )
 
 # Callback Query Handler
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -330,173 +453,364 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = query.from_user.id
     data = query.data
     
-    # Navigation handlers
-    if data == "start":
-        await show_start_menu(query)
-    elif data == "help":
-        await show_help_menu(query)
-    elif data == "settings":
-        if is_owner(user_id):
-            await show_settings_menu(query)
-        else:
-            await query.answer("❌ Owner access required.", show_alert=True)
-    elif data == "channels":
-        if is_admin(user_id):
-            await show_channels_menu(query)
-        else:
-            await query.answer("❌ Admin access required.", show_alert=True)
-    elif data == "admin_controls":
-        if is_admin(user_id):
-            await show_admin_controls(query)
-        else:
-            await query.answer("❌ Admin access required.", show_alert=True)
-    elif data == "add_channel":
-        if is_admin(user_id):
-            user_states[user_id] = UserState.AWAITING_CHANNEL_FORWARD
-            await query.edit_message_text("📨 Please forward any message from the channel you want to add.")
-        else:
-            await query.answer("❌ Admin access required.", show_alert=True)
-    elif data == "post_panel":
-        if is_admin(user_id):
-            channels = db.get_channels()
-            if not channels:
-                await query.edit_message_text("❌ No channels added yet. Use /addch to add channels.")
+    try:
+        # Navigation handlers
+        if data == "start":
+            await show_start_menu(query)
+        elif data == "help":
+            await show_help_menu(query)
+        elif data == "settings":
+            if is_owner(user_id):
+                await show_settings_menu(query)
             else:
-                await show_channel_selection_query(query, "post")
-        else:
-            await query.answer("❌ Admin access required.", show_alert=True)
+                await query.answer("❌ Owner access required.", show_alert=True)
+        elif data == "channels":
+            if is_admin(user_id):
+                await show_channels_menu(query)
+            else:
+                await query.answer("❌ Admin access required.", show_alert=True)
+        elif data == "admin_controls":
+            if is_admin(user_id):
+                await show_admin_controls(query)
+            else:
+                await query.answer("❌ Admin access required.", show_alert=True)
+        elif data == "add_channel":
+            if is_admin(user_id):
+                user_states[user_id] = UserState.AWAITING_CHANNEL_FORWARD
+                await query.edit_message_text(
+                    "📨 Please forward any message from the channel you want to add."
+                )
+            else:
+                await query.answer("❌ Admin access required.", show_alert=True)
+        elif data == "post_panel":
+            if is_admin(user_id):
+                channels = db.get_channels()
+                if not channels:
+                    await query.edit_message_text("❌ No channels added yet. Use /addch to add channels.")
+                else:
+                    await show_channel_selection_query(query, "post")
+            else:
+                await query.answer("❌ Admin access required.", show_alert=True)
+        
+        # Settings handlers
+        elif data == "edit_start_text":
+            if is_owner(user_id):
+                await handle_edit_start_text(query)
+        elif data == "edit_help_text":
+            if is_owner(user_id):
+                await handle_edit_help_text(query)
+        elif data == "edit_start_image":
+            if is_owner(user_id):
+                await handle_edit_start_image(query)
+        elif data == "edit_help_image":
+            if is_owner(user_id):
+                await handle_edit_help_image(query)
+        elif data == "edit_start_buttons":
+            if is_owner(user_id):
+                await handle_edit_start_buttons(query)
+        elif data == "edit_help_buttons":
+            if is_owner(user_id):
+                await handle_edit_help_buttons(query)
+                
+    except Exception as e:
+        logger.error(f"Error in button_handler: {e}")
+        await query.edit_message_text("❌ An error occurred. Please try again.")
 
 # Menu display functions
 async def show_start_menu(query):
     """Show start menu"""
-    settings = db.get_settings().start_message
-    keyboard = create_inline_keyboard(settings['buttons'])
-    await query.edit_message_text(
-        settings['text'],
-        reply_markup=keyboard,
-        parse_mode=ParseMode.MARKDOWN
-    )
+    try:
+        settings = db.get_settings().start_message
+        keyboard = create_inline_keyboard(settings['buttons'])
+        
+        if settings.get('image'):
+            await query.edit_message_media(
+                media=InputMediaPhoto(settings['image'], caption=settings['text']),
+                reply_markup=keyboard
+            )
+        else:
+            await query.edit_message_text(
+                settings['text'],
+                reply_markup=keyboard,
+                parse_mode=ParseMode.MARKDOWN
+            )
+    except Exception as e:
+        logger.error(f"Error in show_start_menu: {e}")
+        await query.edit_message_text("❌ Error displaying menu. Please try /start")
 
 async def show_help_menu(query):
     """Show help menu"""
-    settings = db.get_settings().help_message
-    keyboard = create_inline_keyboard(settings['buttons'])
-    await query.edit_message_text(
-        settings['text'],
-        reply_markup=keyboard,
-        parse_mode=ParseMode.MARKDOWN
-    )
+    try:
+        settings = db.get_settings().help_message
+        keyboard = create_inline_keyboard(settings['buttons'])
+        
+        if settings.get('image'):
+            await query.edit_message_media(
+                media=InputMediaPhoto(settings['image'], caption=settings['text']),
+                reply_markup=keyboard
+            )
+        else:
+            await query.edit_message_text(
+                settings['text'],
+                reply_markup=keyboard,
+                parse_mode=ParseMode.MARKDOWN
+            )
+    except Exception as e:
+        logger.error(f"Error in show_help_menu: {e}")
+        await query.edit_message_text("❌ Error displaying help. Please try /help")
 
 async def show_settings_menu(query):
     """Show settings menu"""
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("📝 Edit Start Text", callback_data="edit_start_text")],
         [InlineKeyboardButton("📝 Edit Help Text", callback_data="edit_help_text")],
+        [InlineKeyboardButton("🖼️ Change Start Image", callback_data="edit_start_image")],
+        [InlineKeyboardButton("🖼️ Change Help Image", callback_data="edit_help_image")],
         [InlineKeyboardButton("🔘 Edit Start Buttons", callback_data="edit_start_buttons")],
         [InlineKeyboardButton("🔘 Edit Help Buttons", callback_data="edit_help_buttons")],
-        [InlineKeyboardButton("⬅️ Back", callback_data="start")]
+        [InlineKeyboardButton("⬅️ Back to Start", callback_data="start")]
     ])
     
     await query.edit_message_text(
-        "⚙️ **Bot Settings**\n\nConfigure your bot messages and appearance:",
+        "⚙️ **Bot Settings Panel**\n\n"
+        "Configure your bot's appearance and messages:\n\n"
+        "• **Text Messages** - Edit start/help text\n"
+        "• **Images** - Add/change images for messages\n"
+        "• **Buttons** - Customize inline buttons\n\n"
+        "Select an option to configure:",
         reply_markup=keyboard,
         parse_mode=ParseMode.MARKDOWN
     )
 
 async def show_channels_menu(query):
     """Show channels menu"""
-    channels = db.get_channels()
-    if not channels:
-        await query.edit_message_text("❌ No channels added yet. Use /addch to add channels.")
-        return
-    
-    keyboard_buttons = []
-    for channel in list(channels.values())[:10]:  # Show first 10 channels
-        keyboard_buttons.append([
-            InlineKeyboardButton(f"📢 {channel.title}", callback_data=f"channel_{channel.chat_id}")
-        ])
-    
-    keyboard_buttons.append([InlineKeyboardButton("⬅️ Back", callback_data="help")])
-    keyboard = InlineKeyboardMarkup(keyboard_buttons)
-    
-    await query.edit_message_text(
-        f"📢 **Connected Channels**\n\nTotal: {len(channels)} channels",
-        reply_markup=keyboard,
-        parse_mode=ParseMode.MARKDOWN
-    )
+    try:
+        channels = db.get_channels()
+        if not channels:
+            await query.edit_message_text("❌ No channels added yet. Use /addch to add channels.")
+            return
+        
+        keyboard_buttons = []
+        for channel in list(channels.values())[:10]:
+            keyboard_buttons.append([
+                InlineKeyboardButton(f"📢 {channel.title}", callback_data=f"channel_{channel.chat_id}")
+            ])
+        
+        keyboard_buttons.append([InlineKeyboardButton("⬅️ Back", callback_data="help")])
+        keyboard = InlineKeyboardMarkup(keyboard_buttons)
+        
+        await query.edit_message_text(
+            f"📢 **Connected Channels**\n\nTotal: {len(channels)} channels",
+            reply_markup=keyboard,
+            parse_mode=ParseMode.MARKDOWN
+        )
+    except Exception as e:
+        logger.error(f"Error in show_channels_menu: {e}")
+        await query.edit_message_text("❌ Error loading channels. Please try again.")
 
 async def show_admin_controls(query):
     """Show admin controls menu"""
-    admins = db.get_admins()
-    admin_list = "\n".join([f"• {admin_id}" for admin_id in admins])
+    try:
+        admins = db.get_admins()
+        admin_list = "\n".join([f"• `{admin_id}`" for admin_id in admins])
+        
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("👮 Add Admin", callback_data="add_admin_cmd")],
+            [InlineKeyboardButton("🗑️ Remove Admin", callback_data="del_admin_cmd")],
+            [InlineKeyboardButton("⬅️ Back", callback_data="help")]
+        ])
+        
+        await query.edit_message_text(
+            f"👮 **Admin Controls**\n\n**Current Admins:**\n{admin_list}\n\n"
+            "Use commands to manage admins:\n"
+            "• `/add_admin` - Add new admin\n"
+            "• `/del_admin` - Remove admin",
+            reply_markup=keyboard,
+            parse_mode=ParseMode.MARKDOWN
+        )
+    except Exception as e:
+        logger.error(f"Error in show_admin_controls: {e}")
+        await query.edit_message_text("❌ Error loading admin controls.")
+
+# Settings handlers
+async def handle_edit_start_text(query):
+    """Handle start text editing"""
+    user_states[query.from_user.id] = UserState.AWAITING_START_TEXT
+    current_text = db.get_settings().start_message['text']
     
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("👮 Add Admin", callback_data="add_admin_cmd")],
-        [InlineKeyboardButton("🗑️ Remove Admin", callback_data="del_admin_cmd")],
-        [InlineKeyboardButton("⬅️ Back", callback_data="help")]
+        [InlineKeyboardButton("❌ Cancel", callback_data="settings")]
     ])
     
     await query.edit_message_text(
-        f"👮 **Admin Controls**\n\nCurrent Admins:\n{admin_list}",
+        f"📝 **Edit Start Text**\n\n"
+        f"Current text:\n`{current_text[:100]}...`\n\n"
+        "Send the new start text (supports Markdown):",
         reply_markup=keyboard,
         parse_mode=ParseMode.MARKDOWN
     )
 
-async def show_channel_selection(update: Update, context: ContextTypes.DEFAULT_TYPE, action: str):
-    """Show channel selection for posting"""
-    channels = db.get_channels()
-    keyboard_buttons = []
+async def handle_edit_help_text(query):
+    """Handle help text editing"""
+    user_states[query.from_user.id] = UserState.AWAITING_HELP_TEXT
+    current_text = db.get_settings().help_message['text']
     
-    for channel in list(channels.values())[:8]:  # Limit to 8 channels
-        keyboard_buttons.append([
-            InlineKeyboardButton(f"📢 {channel.title}", callback_data=f"select_channel_{channel.chat_id}")
-        ])
-    
-    keyboard_buttons.append([InlineKeyboardButton("🔍 Search Channel", callback_data="search_channel")])
-    keyboard_buttons.append([InlineKeyboardButton("❌ Cancel", callback_data="cancel")])
-    
-    keyboard = InlineKeyboardMarkup(keyboard_buttons)
-    
-    await update.message.reply_text(
-        "📢 Select a channel to post in:",
-        reply_markup=keyboard
-    )
-
-async def show_channel_selection_query(query, action: str):
-    """Show channel selection for query"""
-    channels = db.get_channels()
-    keyboard_buttons = []
-    
-    for channel in list(channels.values())[:8]:
-        keyboard_buttons.append([
-            InlineKeyboardButton(f"📢 {channel.title}", callback_data=f"select_channel_{channel.chat_id}")
-        ])
-    
-    keyboard_buttons.append([InlineKeyboardButton("🔍 Search Channel", callback_data="search_channel")])
-    keyboard_buttons.append([InlineKeyboardButton("❌ Cancel", callback_data="cancel")])
-    
-    keyboard = InlineKeyboardMarkup(keyboard_buttons)
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("❌ Cancel", callback_data="settings")]
+    ])
     
     await query.edit_message_text(
-        "📢 Select a channel to post in:",
-        reply_markup=keyboard
-    )
-
-async def show_channel_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Display channel list"""
-    channels = db.get_channels()
-    if not channels:
-        await update.message.reply_text("❌ No channels added yet. Use /addch to add channels.")
-        return
-    
-    channel_list = "\n".join([f"• {channel.title} (ID: {channel.chat_id})" for channel in channels.values()])
-    
-    await update.message.reply_text(
-        f"📢 **Connected Channels**\n\n{channel_list}\n\nTotal: {len(channels)} channels",
+        f"📝 **Edit Help Text**\n\n"
+        f"Current text preview:\n`{current_text[:100]}...`\n\n"
+        "Send the new help text (supports Markdown):",
+        reply_markup=keyboard,
         parse_mode=ParseMode.MARKDOWN
     )
 
-# Message Handler
+async def handle_edit_start_image(query):
+    """Handle start image editing"""
+    user_states[query.from_user.id] = UserState.AWAITING_START_IMAGE
+    
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("❌ Remove Image", callback_data="remove_start_image")],
+        [InlineKeyboardButton("❌ Cancel", callback_data="settings")]
+    ])
+    
+    current_image = db.get_settings().start_message.get('image')
+    image_status = "✅ Currently has image" if current_image else "❌ No image set"
+    
+    await query.edit_message_text(
+        f"🖼️ **Change Start Image**\n\n"
+        f"{image_status}\n\n"
+        "Send a new image or photo, or click 'Remove Image' to clear:",
+        reply_markup=keyboard
+    )
+
+async def handle_edit_help_image(query):
+    """Handle help image editing"""
+    user_states[query.from_user.id] = UserState.AWAITING_HELP_IMAGE
+    
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("❌ Remove Image", callback_data="remove_help_image")],
+        [InlineKeyboardButton("❌ Cancel", callback_data="settings")]
+    ])
+    
+    current_image = db.get_settings().help_message.get('image')
+    image_status = "✅ Currently has image" if current_image else "❌ No image set"
+    
+    await query.edit_message_text(
+        f"🖼️ **Change Help Image**\n\n"
+        f"{image_status}\n\n"
+        "Send a new image or photo, or click 'Remove Image' to clear:",
+        reply_markup=keyboard
+    )
+
+async def handle_edit_start_buttons(query):
+    """Handle start buttons editing"""
+    user_states[query.from_user.id] = UserState.AWAITING_START_BUTTONS
+    current_buttons = db.get_settings().start_message['buttons']
+    
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("❌ Cancel", callback_data="settings")]
+    ])
+    
+    await query.edit_message_text(
+        "🔘 **Edit Start Buttons**\n\n"
+        "Send new button configuration in format:\n"
+        "```\nButton Text - callback_data\nSecond Button - callback_data2\n```\n"
+        "Each line creates a new row of buttons.",
+        reply_markup=keyboard,
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+async def handle_edit_help_buttons(query):
+    """Handle help buttons editing"""
+    user_states[query.from_user.id] = UserState.AWAITING_HELP_BUTTONS
+    current_buttons = db.get_settings().help_message['buttons']
+    
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("❌ Cancel", callback_data="settings")]
+    ])
+    
+    await query.edit_message_text(
+        "🔘 **Edit Help Buttons**\n\n"
+        "Send new button configuration in format:\n"
+        "```\nButton Text - callback_data\nSecond Button - callback_data2\n```\n"
+        "Each line creates a new row of buttons.",
+        reply_markup=keyboard,
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+# Channel management functions
+async def show_channel_selection(update: Update, context: ContextTypes.DEFAULT_TYPE, action: str):
+    """Show channel selection for posting"""
+    try:
+        channels = db.get_channels()
+        keyboard_buttons = []
+        
+        for channel in list(channels.values())[:8]:
+            keyboard_buttons.append([
+                InlineKeyboardButton(f"📢 {channel.title}", callback_data=f"select_channel_{channel.chat_id}")
+            ])
+        
+        keyboard_buttons.append([InlineKeyboardButton("🔍 Search Channel", callback_data="search_channel")])
+        keyboard_buttons.append([InlineKeyboardButton("❌ Cancel", callback_data="cancel")])
+        
+        keyboard = InlineKeyboardMarkup(keyboard_buttons)
+        
+        await update.message.reply_text(
+            "📢 **Select a channel to post in:**\n\n"
+            "Choose from your connected channels:",
+            reply_markup=keyboard
+        )
+    except Exception as e:
+        logger.error(f"Error in show_channel_selection: {e}")
+        await update.message.reply_text("❌ Error loading channels. Please try again.")
+
+async def show_channel_selection_query(query, action: str):
+    """Show channel selection for query"""
+    try:
+        channels = db.get_channels()
+        keyboard_buttons = []
+        
+        for channel in list(channels.values())[:8]:
+            keyboard_buttons.append([
+                InlineKeyboardButton(f"📢 {channel.title}", callback_data=f"select_channel_{channel.chat_id}")
+            ])
+        
+        keyboard_buttons.append([InlineKeyboardButton("🔍 Search Channel", callback_data="search_channel")])
+        keyboard_buttons.append([InlineKeyboardButton("❌ Cancel", callback_data="cancel")])
+        
+        keyboard = InlineKeyboardMarkup(keyboard_buttons)
+        
+        await query.edit_message_text(
+            "📢 **Select a channel to post in:**\n\n"
+            "Choose from your connected channels:",
+            reply_markup=keyboard
+        )
+    except Exception as e:
+        logger.error(f"Error in show_channel_selection_query: {e}")
+        await query.edit_message_text("❌ Error loading channels. Please try again.")
+
+async def show_channel_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Display channel list"""
+    try:
+        channels = db.get_channels()
+        if not channels:
+            await update.message.reply_text("❌ No channels added yet. Use /addch to add channels.")
+            return
+        
+        channel_list = "\n".join([f"• **{channel.title}** (ID: `{channel.chat_id}`)" for channel in channels.values()])
+        
+        await update.message.reply_text(
+            f"📢 **Connected Channels**\n\n{channel_list}\n\n**Total:** {len(channels)} channels",
+            parse_mode=ParseMode.MARKDOWN
+        )
+    except Exception as e:
+        logger.error(f"Error in show_channel_list: {e}")
+        await update.message.reply_text("❌ Error loading channel list. Please try again.")
+
+# Message Handler for text inputs
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle text messages for various states"""
     user_id = update.effective_user.id
@@ -507,11 +821,181 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     state = user_states[user_id]
     
-    if state == UserState.AWAITING_ADMIN_USERNAME:
-        await handle_add_admin(update, text)
-    elif state == UserState.AWAITING_DEL_ADMIN_USERNAME:
-        await handle_del_admin(update, text)
+    try:
+        if state == UserState.AWAITING_ADMIN_USERNAME:
+            await handle_add_admin(update, text)
+        elif state == UserState.AWAITING_DEL_ADMIN_USERNAME:
+            await handle_del_admin(update, text)
+        elif state == UserState.AWAITING_START_TEXT:
+            await handle_save_start_text(update, text)
+        elif state == UserState.AWAITING_HELP_TEXT:
+            await handle_save_help_text(update, text)
+        elif state == UserState.AWAITING_START_BUTTONS:
+            await handle_save_start_buttons(update, text)
+        elif state == UserState.AWAITING_HELP_BUTTONS:
+            await handle_save_help_buttons(update, text)
+            
+    except Exception as e:
+        logger.error(f"Error in message_handler: {e}")
+        await update.message.reply_text("❌ An error occurred while processing your input.")
 
+# Photo Handler for image inputs
+async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle photo messages for image states"""
+    user_id = update.effective_user.id
+    
+    if user_id not in user_states:
+        return
+    
+    state = user_states[user_id]
+    photo = update.message.photo[-1]  # Get highest resolution photo
+    
+    try:
+        if state == UserState.AWAITING_START_IMAGE:
+            await handle_save_start_image(update, photo.file_id)
+        elif state == UserState.AWAITING_HELP_IMAGE:
+            await handle_save_help_image(update, photo.file_id)
+            
+    except Exception as e:
+        logger.error(f"Error in photo_handler: {e}")
+        await update.message.reply_text("❌ An error occurred while processing the image.")
+
+# Settings save handlers
+async def handle_save_start_text(update: Update, text: str):
+    """Save new start text"""
+    db.update_start_message(text=text)
+    del user_states[update.effective_user.id]
+    
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("⬅️ Back to Settings", callback_data="settings")],
+        [InlineKeyboardButton("📱 View Start", callback_data="start")]
+    ])
+    
+    await update.message.reply_text(
+        "✅ **Start text updated successfully!**\n\n"
+        "Your new start message has been saved.",
+        reply_markup=keyboard,
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+async def handle_save_help_text(update: Update, text: str):
+    """Save new help text"""
+    db.update_help_message(text=text)
+    del user_states[update.effective_user.id]
+    
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("⬅️ Back to Settings", callback_data="settings")],
+        [InlineKeyboardButton("📱 View Help", callback_data="help")]
+    ])
+    
+    await update.message.reply_text(
+        "✅ **Help text updated successfully!**\n\n"
+        "Your new help message has been saved.",
+        reply_markup=keyboard,
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+async def handle_save_start_image(update: Update, file_id: str):
+    """Save new start image"""
+    db.update_start_message(image=file_id)
+    del user_states[update.effective_user.id]
+    
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("⬅️ Back to Settings", callback_data="settings")],
+        [InlineKeyboardButton("📱 View Start", callback_data="start")]
+    ])
+    
+    await update.message.reply_text(
+        "✅ **Start image updated successfully!**\n\n"
+        "Your new start image has been saved.",
+        reply_markup=keyboard
+    )
+
+async def handle_save_help_image(update: Update, file_id: str):
+    """Save new help image"""
+    db.update_help_message(image=file_id)
+    del user_states[update.effective_user.id]
+    
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("⬅️ Back to Settings", callback_data="settings")],
+        [InlineKeyboardButton("📱 View Help", callback_data="help")]
+    ])
+    
+    await update.message.reply_text(
+        "✅ **Help image updated successfully!**\n\n"
+        "Your new help image has been saved.",
+        reply_markup=keyboard
+    )
+
+async def handle_save_start_buttons(update: Update, text: str):
+    """Save new start buttons"""
+    try:
+        # Parse button configuration
+        buttons = []
+        lines = text.strip().split('\n')
+        
+        for line in lines:
+            if '-' in line:
+                button_text, callback_data = line.split('-', 1)
+                buttons.append([[button_text.strip(), callback_data.strip()]])
+        
+        if buttons:
+            db.update_start_message(buttons=buttons)
+            del user_states[update.effective_user.id]
+            
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅️ Back to Settings", callback_data="settings")],
+                [InlineKeyboardButton("📱 View Start", callback_data="start")]
+            ])
+            
+            await update.message.reply_text(
+                "✅ **Start buttons updated successfully!**\n\n"
+                f"Added {len(buttons)} button rows.",
+                reply_markup=keyboard
+            )
+        else:
+            await update.message.reply_text(
+                "❌ Invalid button format. Use: `Button Text - callback_data`"
+            )
+    except Exception as e:
+        logger.error(f"Error saving start buttons: {e}")
+        await update.message.reply_text("❌ Error saving buttons. Please check the format.")
+
+async def handle_save_help_buttons(update: Update, text: str):
+    """Save new help buttons"""
+    try:
+        # Parse button configuration
+        buttons = []
+        lines = text.strip().split('\n')
+        
+        for line in lines:
+            if '-' in line:
+                button_text, callback_data = line.split('-', 1)
+                buttons.append([[button_text.strip(), callback_data.strip()]])
+        
+        if buttons:
+            db.update_help_message(buttons=buttons)
+            del user_states[update.effective_user.id]
+            
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅️ Back to Settings", callback_data="settings")],
+                [InlineKeyboardButton("📱 View Help", callback_data="help")]
+            ])
+            
+            await update.message.reply_text(
+                "✅ **Help buttons updated successfully!**\n\n"
+                f"Added {len(buttons)} button rows.",
+                reply_markup=keyboard
+            )
+        else:
+            await update.message.reply_text(
+                "❌ Invalid button format. Use: `Button Text - callback_data`"
+            )
+    except Exception as e:
+        logger.error(f"Error saving help buttons: {e}")
+        await update.message.reply_text("❌ Error saving buttons. Please check the format.")
+
+# Admin management handlers
 async def handle_add_admin(update: Update, text: str):
     """Handle adding new admin"""
     user_id = update.effective_user.id
@@ -519,7 +1003,7 @@ async def handle_add_admin(update: Update, text: str):
     try:
         new_admin_id = int(text)
         if db.add_admin(new_admin_id):
-            await update.message.reply_text(f"✅ Successfully added new admin: {new_admin_id}")
+            await update.message.reply_text(f"✅ Successfully added new admin: `{new_admin_id}`", parse_mode=ParseMode.MARKDOWN)
         else:
             await update.message.reply_text("❌ Admin already exists.")
     
@@ -536,7 +1020,7 @@ async def handle_del_admin(update: Update, text: str):
     try:
         admin_id = int(text)
         if db.remove_admin(admin_id):
-            await update.message.reply_text(f"✅ Admin removed successfully: {admin_id}")
+            await update.message.reply_text(f"✅ Admin removed successfully: `{admin_id}`", parse_mode=ParseMode.MARKDOWN)
         else:
             await update.message.reply_text("❌ Admin not found or cannot remove owner.")
     
@@ -546,7 +1030,7 @@ async def handle_del_admin(update: Update, text: str):
     if user_id in user_states:
         del user_states[user_id]
 
-# Forward Handler
+# Forward Handler with proper error handling
 async def forward_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle forwarded messages for channel addition"""
     user_id = update.effective_user.id
@@ -554,31 +1038,73 @@ async def forward_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user_id not in user_states or user_states[user_id] != UserState.AWAITING_CHANNEL_FORWARD:
         return
     
-    forwarded_from = update.message.forward_from_chat
-    
-    if forwarded_from and forwarded_from.type == "channel":
+    try:
+        message = update.message
+        if not message.forward_origin or not isinstance(message.forward_origin, Chat):
+            await update.message.reply_text("❌ Please forward a message from a channel.")
+            return
+        
+        chat = message.forward_origin
+        if chat.type != ChatType.CHANNEL:
+            await update.message.reply_text("❌ Please forward a message from a channel, not a group or private chat.")
+            return
+        
+        # Check if bot is admin in the channel with proper permissions
         try:
-            # Check if bot is admin in the channel
-            chat_member = await context.bot.get_chat_member(forwarded_from.id, context.bot.id)
+            bot_member = await context.bot.get_chat_member(chat.id, context.bot.id)
             
-            if chat_member.status not in ['administrator', 'creator']:
-                await update.message.reply_text("⚠️ Bot must be an admin in this channel before adding.")
+            if bot_member.status not in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
+                await update.message.reply_text(
+                    "⚠️ **Bot must be an admin in this channel before adding.**\n\n"
+                    "Please make sure:\n"
+                    "• Bot is added as administrator\n"
+                    "• Bot has post message permissions\n"
+                    "• Bot can manage posts (if available)"
+                )
+                return
+            
+            # Check if bot can post messages
+            if not bot_member.can_post_messages:
+                await update.message.reply_text(
+                    "⚠️ **Bot doesn't have permission to post messages in this channel.**\n\n"
+                    "Please grant the bot 'Post Messages' permission in channel settings."
+                )
                 return
             
             # Add channel to database
             channel = Channel(
-                chat_id=forwarded_from.id,
-                title=forwarded_from.title,
-                username=getattr(forwarded_from, 'username', '')
+                chat_id=chat.id,
+                title=chat.title,
+                username=getattr(chat, 'username', ''),
+                invite_link=getattr(chat, 'invite_link', '')
             )
             db.add_channel(channel)
             
             del user_states[user_id]
-            await update.message.reply_text(f"✅ Channel added successfully: {forwarded_from.title}")
+            await update.message.reply_text(
+                f"✅ **Channel added successfully!**\n\n"
+                f"**Title:** {chat.title}\n"
+                f"**ID:** `{chat.id}`\n"
+                f"**Username:** @{chat.username if chat.username else 'N/A'}\n\n"
+                "You can now use /post to create posts in this channel.",
+                parse_mode=ParseMode.MARKDOWN
+            )
             
-        except Exception as e:
-            await update.message.reply_text("❌ Error verifying bot admin status. Please try again.")
-            logger.error(f"Error checking admin status: {e}")
+        except BadRequest as e:
+            if "chat not found" in str(e).lower() or "bot is not a member" in str(e).lower():
+                await update.message.reply_text(
+                    "❌ **Bot is not a member of this channel.**\n\n"
+                    "Please add the bot to the channel first and make it an administrator."
+                )
+            else:
+                raise e
+                
+    except TelegramError as e:
+        logger.error(f"Telegram error in forward_handler: {e}")
+        await update.message.reply_text("❌ Error verifying channel. Please try again.")
+    except Exception as e:
+        logger.error(f"Unexpected error in forward_handler: {e}")
+        await update.message.reply_text("❌ An unexpected error occurred. Please try again.")
 
 # Setup handlers
 def setup_handlers():
@@ -598,15 +1124,36 @@ def setup_handlers():
     
     # Message handlers
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
+    application.add_handler(MessageHandler(filters.PHOTO, photo_handler))
     application.add_handler(MessageHandler(filters.FORWARDED, forward_handler))
+
+# Error handler
+async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle errors"""
+    logger.error(f"Exception while handling an update: {context.error}", exc_info=context.error)
+    
+    if update and update.effective_message:
+        try:
+            await update.effective_message.reply_text(
+                "❌ An error occurred while processing your request. Please try again."
+            )
+        except Exception as e:
+            logger.error(f"Error sending error message: {e}")
 
 # Main function
 def main():
     """Main function to run the bot"""
-    logger.info("Starting bot with JSON database...")
+    if not BOT_TOKEN:
+        logger.error("BOT_TOKEN not found in environment variables!")
+        return
+    
+    logger.info("Starting Advanced Telegram Bot with JSON database...")
     
     # Setup all handlers
     setup_handlers()
+    
+    # Add error handler
+    application.add_error_handler(error_handler)
     
     # Run the bot with polling
     application.run_polling(
