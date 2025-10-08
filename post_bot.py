@@ -744,7 +744,9 @@ async def run():
             timezone="UTC",
             max_workers=2  # Reduce worker threads for Termux
         )
-
+       loggger.info("Bot is running....")
+       while True:
+           await asyncio.sleep(3600)
 def main():
     """Main function to run the bot"""
     import asyncio
