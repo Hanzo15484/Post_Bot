@@ -13,6 +13,7 @@ from telegram.ext import (
     MessageHandler, filters, ContextTypes, CallbackContext
 )
 from telegram.constants import ParseMode
+from dotenv import load_dotenv
 
 # Load environment variables
 load_dotenv("Bot_Token.env")  # Load variables from .env
