@@ -26,6 +26,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+admins = 5373577888, 6170814776
 # Database models (using dict as example - replace with actual database)
 class BotSettings:
     def __init__(self):
