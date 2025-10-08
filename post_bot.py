@@ -733,7 +733,6 @@ application = (Application.builder()
 
 async def run():
     """Start the bot with your specified running process"""
-    await load_admin_ids()
     logger.info("Bot started successfully!")
     await application.initialize()
     await application.start()
