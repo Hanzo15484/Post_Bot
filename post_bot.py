@@ -11,7 +11,7 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Mess
 from telegram.constants import ParseMode
 
 # Load environment variables
-load_dotenv("Bot_Token.env")
+load_dotenv("bot_token.env")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 # Configure logging
