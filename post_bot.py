@@ -2,7 +2,7 @@ import logging
 import os
 import json
 import re
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Tuple
 from dataclasses import dataclass, asdict
 from enum import Enum
 from dotenv import load_dotenv
@@ -18,7 +18,7 @@ from telegram.constants import ParseMode, ChatType, ChatMemberStatus
 from telegram.error import BadRequest, TelegramError
 
 # Load environment variables
-load_dotenv("bot_token.env")
+load_dotenv("Bot_Token.env")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 # Configure logging
@@ -31,6 +31,7 @@ logger = logging.getLogger(__name__)
 # Constants
 OWNER_ID = 5373577888
 DATABASE_FILE = "database.json"
+MAX_MESSAGE_LENGTH = 4096
 
 @dataclass
 class Channel:
@@ -64,12 +65,14 @@ class UserState(Enum):
     AWAITING_HELP_BUTTONS = "awaiting_help_buttons"
     AWAITING_START_IMAGE = "awaiting_start_image"
     AWAITING_HELP_IMAGE = "awaiting_help_image"
+    AWAITING_BUTTON_TEXT = "awaiting_button_text"
 
 class Database:
     def __init__(self):
         self.data = {
             "admins": [5373577888, 6170814776, 7569045740],
             "channels": {},
+            "button_texts": {},
             "settings": {
                 "start_message": {
                     "text": "🤖 **Welcome to Advanced Telegram Bot!**\n\n"
@@ -107,7 +110,7 @@ class Database:
                            "• Manage bot settings",
                     "image": None,
                     "buttons": [
-                        [["⬅️ Back to Start", "start"]],
+                        [["⬅️ Back", "start"]],
                         [["⚙️ Settings", "settings"]],
                         [["📢 Channel Manager", "channels"]],
                         [["👮 Admin Controls", "admin_controls"]]
@@ -182,6 +185,19 @@ class Database:
             del self.data["channels"][str(chat_id)]
             self.save()
 
+    # Button texts methods
+    def get_button_text(self, button_id: str) -> str:
+        return self.data["button_texts"].get(button_id, "No text available.")
+
+    def set_button_text(self, button_id: str, text: str):
+        self.data["button_texts"][button_id] = text
+        self.save()
+
+    def delete_button_text(self, button_id: str):
+        if button_id in self.data["button_texts"]:
+            del self.data["button_texts"][button_id]
+            self.save()
+
     # Settings methods
     def get_settings(self) -> BotSettings:
         return BotSettings(**self.data["settings"])
@@ -209,6 +225,7 @@ db = Database()
 user_states: Dict[int, UserState] = {}
 post_drafts: Dict[int, PostDraft] = {}
 edit_sessions: Dict[int, Dict] = {}
+button_editing: Dict[int, Dict] = {}
 
 # Create application with optimized timeouts
 application = (Application.builder()
@@ -229,12 +246,39 @@ def is_owner(user_id: int) -> bool:
 async def safe_send_message(chat_id: int, text: str, **kwargs):
     """Safely send message with error handling"""
     try:
+        # Truncate text if too long
+        if len(text) > MAX_MESSAGE_LENGTH:
+            text = text[:MAX_MESSAGE_LENGTH - 100] + "...\n\n[Message truncated due to length]"
+        
+        # Try with Markdown first
+        if 'parse_mode' not in kwargs:
+            kwargs['parse_mode'] = ParseMode.MARKDOWN
+        
         return await application.bot.send_message(chat_id, text, **kwargs)
     except BadRequest as e:
-        if "can't parse entities" in str(e):
+        if "can't parse entities" in str(e) or "can't find end" in str(e):
             # Retry without Markdown parsing
             kwargs.pop('parse_mode', None)
             return await application.bot.send_message(chat_id, text, **kwargs)
+        raise e
+
+def safe_edit_message(text: str, **kwargs):
+    """Safely edit message with error handling"""
+    try:
+        # Truncate text if too long
+        if len(text) > MAX_MESSAGE_LENGTH:
+            text = text[:MAX_MESSAGE_LENGTH - 100] + "...\n\n[Message truncated due to length]"
+        
+        # Try with Markdown first
+        if 'parse_mode' not in kwargs:
+            kwargs['parse_mode'] = ParseMode.MARKDOWN
+        
+        return kwargs['query'].edit_message_text(text, **kwargs)
+    except BadRequest as e:
+        if "can't parse entities" in str(e) or "can't find end" in str(e):
+            # Retry without Markdown parsing
+            kwargs.pop('parse_mode', None)
+            return kwargs['query'].edit_message_text(text, **kwargs)
         raise e
 
 def create_inline_keyboard(buttons_config: List[List[List[str]]]) -> InlineKeyboardMarkup:
@@ -261,24 +305,59 @@ def create_url_keyboard(buttons_config: List[List[Dict]]) -> InlineKeyboardMarku
             keyboard.append(keyboard_row)
     return InlineKeyboardMarkup(keyboard)
 
-def parse_buttons(button_text: str) -> List[List[Dict]]:
-    """Parse button text into structured format"""
+def parse_button_config(text: str) -> Tuple[List[List[List[str]]], List[str]]:
+    """
+    Parse button configuration text with multiple formats:
+    - URL buttons: ButtonText - url
+    - Callback buttons: ButtonText - callback_data
+    - Text display buttons: ButtonText - Text when user click
+    - Same row: use | separator
+    - Special buttons: back, next, close
+    """
     buttons = []
-    rows = button_text.split('\n')
+    button_texts = {}
+    lines = text.strip().split('\n')
+    line_number = 0
     
-    for row in rows:
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+            
         row_buttons = []
-        button_pairs = row.split('|')
+        button_pairs = line.split('|')
         
         for pair in button_pairs:
+            pair = pair.strip()
             if '-' in pair:
-                text, url = pair.split('-', 1)
-                row_buttons.append({"text": text.strip(), "url": url.strip()})
+                button_text, action = pair.split('-', 1)
+                button_text = button_text.strip()
+                action = action.strip()
+                
+                # Generate unique button ID
+                button_id = f"btn_{line_number}_{len(row_buttons)}"
+                
+                # Determine button type
+                if action.lower() in ['back', 'next', 'close']:
+                    # Special navigation buttons
+                    row_buttons.append([button_text, action.lower()])
+                elif action.startswith('http://') or action.startswith('https://'):
+                    # URL button
+                    row_buttons.append([button_text, f"url_{button_id}"])
+                    button_texts[button_id] = action
+                elif len(action) > 50 or '\n' in action:
+                    # Text display button (long text)
+                    row_buttons.append([button_text, f"text_{button_id}"])
+                    button_texts[button_id] = action
+                else:
+                    # Regular callback button
+                    row_buttons.append([button_text, action])
         
         if row_buttons:
             buttons.append(row_buttons)
+            line_number += 1
     
-    return buttons
+    return buttons, button_texts
 
 def escape_markdown(text: str) -> str:
     """Escape Markdown special characters"""
@@ -424,13 +503,14 @@ async def del_admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def show_settings_menu_from_command(update: Update):
     """Show settings menu from command"""
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📝 Edit Start Text", callback_data="edit_start_text")],
-        [InlineKeyboardButton("📝 Edit Help Text", callback_data="edit_help_text")],
-        [InlineKeyboardButton("🖼️ Change Start Image", callback_data="edit_start_image")],
-        [InlineKeyboardButton("🖼️ Change Help Image", callback_data="edit_help_image")],
-        [InlineKeyboardButton("🔘 Edit Start Buttons", callback_data="edit_start_buttons")],
-        [InlineKeyboardButton("🔘 Edit Help Buttons", callback_data="edit_help_buttons")],
-        [InlineKeyboardButton("⬅️ Back to Start", callback_data="start")]
+        [InlineKeyboardButton("📝 Edit Start Text", callback_data="edit_start_text"),
+         InlineKeyboardButton("📝 Edit Help Text", callback_data="edit_help_text")],
+        [InlineKeyboardButton("🖼️ Start Image", callback_data="edit_start_image"),
+         InlineKeyboardButton("🖼️ Help Image", callback_data="edit_help_image")],
+        [InlineKeyboardButton("🔘 Start Buttons", callback_data="edit_start_buttons"),
+         InlineKeyboardButton("🔘 Help Buttons", callback_data="edit_help_buttons")],
+        [InlineKeyboardButton("🗑️ Manage Button Texts", callback_data="manage_button_texts")],
+        [InlineKeyboardButton("⬅️ Back", callback_data="start")]
     ])
     
     await update.message.reply_text(
@@ -438,7 +518,8 @@ async def show_settings_menu_from_command(update: Update):
         "Configure your bot's appearance and messages:\n\n"
         "• **Text Messages** - Edit start/help text\n"
         "• **Images** - Add/change images for messages\n"
-        "• **Buttons** - Customize inline buttons\n\n"
+        "• **Buttons** - Customize inline buttons\n"
+        "• **Button Texts** - Manage text display buttons\n\n"
         "Select an option to configure:",
         reply_markup=keyboard,
         parse_mode=ParseMode.MARKDOWN
@@ -511,10 +592,33 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif data == "edit_help_buttons":
             if is_owner(user_id):
                 await handle_edit_help_buttons(query)
-                
+        elif data == "manage_button_texts":
+            if is_owner(user_id):
+                await show_button_texts_management(query)
+        elif data == "back":
+            await show_start_menu(query)
+        elif data == "close":
+            await query.delete_message()
+        
+        # Text display buttons
+        elif data.startswith("text_"):
+            button_id = data[5:]
+            text = db.get_button_text(button_id)
+            await query.answer(text, show_alert=True)
+        
+        # Button text management
+        elif data.startswith("delete_text_"):
+            button_id = data[12:]
+            db.delete_button_text(button_id)
+            await query.answer("✅ Button text deleted!", show_alert=True)
+            await show_button_texts_management(query)
+            
     except Exception as e:
         logger.error(f"Error in button_handler: {e}")
-        await query.edit_message_text("❌ An error occurred. Please try again.")
+        try:
+            await query.edit_message_text("❌ An error occurred. Please try again.")
+        except:
+            await query.answer("❌ Error occurred.", show_alert=True)
 
 # Menu display functions
 async def show_start_menu(query):
@@ -529,10 +633,10 @@ async def show_start_menu(query):
                 reply_markup=keyboard
             )
         else:
-            await query.edit_message_text(
+            await safe_edit_message(
                 settings['text'],
-                reply_markup=keyboard,
-                parse_mode=ParseMode.MARKDOWN
+                query=query,
+                reply_markup=keyboard
             )
     except Exception as e:
         logger.error(f"Error in show_start_menu: {e}")
@@ -550,10 +654,10 @@ async def show_help_menu(query):
                 reply_markup=keyboard
             )
         else:
-            await query.edit_message_text(
+            await safe_edit_message(
                 settings['text'],
-                reply_markup=keyboard,
-                parse_mode=ParseMode.MARKDOWN
+                query=query,
+                reply_markup=keyboard
             )
     except Exception as e:
         logger.error(f"Error in show_help_menu: {e}")
@@ -562,24 +666,70 @@ async def show_help_menu(query):
 async def show_settings_menu(query):
     """Show settings menu"""
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📝 Edit Start Text", callback_data="edit_start_text")],
-        [InlineKeyboardButton("📝 Edit Help Text", callback_data="edit_help_text")],
-        [InlineKeyboardButton("🖼️ Change Start Image", callback_data="edit_start_image")],
-        [InlineKeyboardButton("🖼️ Change Help Image", callback_data="edit_help_image")],
-        [InlineKeyboardButton("🔘 Edit Start Buttons", callback_data="edit_start_buttons")],
-        [InlineKeyboardButton("🔘 Edit Help Buttons", callback_data="edit_help_buttons")],
-        [InlineKeyboardButton("⬅️ Back to Start", callback_data="start")]
+        [InlineKeyboardButton("📝 Edit Start Text", callback_data="edit_start_text"),
+         InlineKeyboardButton("📝 Edit Help Text", callback_data="edit_help_text")],
+        [InlineKeyboardButton("🖼️ Start Image", callback_data="edit_start_image"),
+         InlineKeyboardButton("🖼️ Help Image", callback_data="edit_help_image")],
+        [InlineKeyboardButton("🔘 Start Buttons", callback_data="edit_start_buttons"),
+         InlineKeyboardButton("🔘 Help Buttons", callback_data="edit_help_buttons")],
+        [InlineKeyboardButton("🗑️ Manage Button Texts", callback_data="manage_button_texts")],
+        [InlineKeyboardButton("⬅️ Back", callback_data="start")]
     ])
     
-    await query.edit_message_text(
+    await safe_edit_message(
         "⚙️ **Bot Settings Panel**\n\n"
         "Configure your bot's appearance and messages:\n\n"
         "• **Text Messages** - Edit start/help text\n"
         "• **Images** - Add/change images for messages\n"
-        "• **Buttons** - Customize inline buttons\n\n"
+        "• **Buttons** - Customize inline buttons\n"
+        "• **Button Texts** - Manage text display buttons\n\n"
         "Select an option to configure:",
-        reply_markup=keyboard,
-        parse_mode=ParseMode.MARKDOWN
+        query=query,
+        reply_markup=keyboard
+    )
+
+async def show_button_texts_management(query):
+    """Show button texts management menu"""
+    button_texts = db.data["button_texts"]
+    
+    if not button_texts:
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("⬅️ Back", callback_data="settings")]
+        ])
+        await safe_edit_message(
+            "📝 **Button Texts Management**\n\n"
+            "No button texts found. Text display buttons will be created automatically "
+            "when you use the format: `ButtonText - Text when user click` in button configuration.",
+            query=query,
+            reply_markup=keyboard
+        )
+        return
+    
+    text_lines = []
+    keyboard_buttons = []
+    
+    for i, (button_id, text_content) in enumerate(button_texts.items()):
+        preview = text_content[:50] + "..." if len(text_content) > 50 else text_content
+        text_lines.append(f"`{button_id}`: {preview}")
+        
+        # Add delete button for every 2 items
+        if i % 2 == 0:
+            row = [InlineKeyboardButton(f"🗑️ {button_id}", callback_data=f"delete_text_{button_id}")]
+            if i + 1 < len(button_texts):
+                next_id = list(button_texts.keys())[i + 1]
+                row.append(InlineKeyboardButton(f"🗑️ {next_id}", callback_data=f"delete_text_{next_id}"))
+            keyboard_buttons.append(row)
+    
+    keyboard_buttons.append([InlineKeyboardButton("⬅️ Back", callback_data="settings")])
+    keyboard = InlineKeyboardMarkup(keyboard_buttons)
+    
+    await safe_edit_message(
+        f"📝 **Button Texts Management**\n\n"
+        f"**Total Texts:** {len(button_texts)}\n\n"
+        f"**Available Texts:**\n" + "\n".join(text_lines) + "\n\n"
+        "Click on 🗑️ to delete a button text.",
+        query=query,
+        reply_markup=keyboard
     )
 
 async def show_channels_menu(query):
@@ -599,10 +749,10 @@ async def show_channels_menu(query):
         keyboard_buttons.append([InlineKeyboardButton("⬅️ Back", callback_data="help")])
         keyboard = InlineKeyboardMarkup(keyboard_buttons)
         
-        await query.edit_message_text(
+        await safe_edit_message(
             f"📢 **Connected Channels**\n\nTotal: {len(channels)} channels",
-            reply_markup=keyboard,
-            parse_mode=ParseMode.MARKDOWN
+            query=query,
+            reply_markup=keyboard
         )
     except Exception as e:
         logger.error(f"Error in show_channels_menu: {e}")
@@ -620,13 +770,13 @@ async def show_admin_controls(query):
             [InlineKeyboardButton("⬅️ Back", callback_data="help")]
         ])
         
-        await query.edit_message_text(
+        await safe_edit_message(
             f"👮 **Admin Controls**\n\n**Current Admins:**\n{admin_list}\n\n"
             "Use commands to manage admins:\n"
             "• `/add_admin` - Add new admin\n"
             "• `/del_admin` - Remove admin",
-            reply_markup=keyboard,
-            parse_mode=ParseMode.MARKDOWN
+            query=query,
+            reply_markup=keyboard
         )
     except Exception as e:
         logger.error(f"Error in show_admin_controls: {e}")
@@ -642,12 +792,12 @@ async def handle_edit_start_text(query):
         [InlineKeyboardButton("❌ Cancel", callback_data="settings")]
     ])
     
-    await query.edit_message_text(
+    await safe_edit_message(
         f"📝 **Edit Start Text**\n\n"
-        f"Current text:\n`{current_text[:100]}...`\n\n"
+        f"Current text preview:\n`{current_text[:100]}...`\n\n"
         "Send the new start text (supports Markdown):",
-        reply_markup=keyboard,
-        parse_mode=ParseMode.MARKDOWN
+        query=query,
+        reply_markup=keyboard
     )
 
 async def handle_edit_help_text(query):
@@ -659,12 +809,12 @@ async def handle_edit_help_text(query):
         [InlineKeyboardButton("❌ Cancel", callback_data="settings")]
     ])
     
-    await query.edit_message_text(
+    await safe_edit_message(
         f"📝 **Edit Help Text**\n\n"
         f"Current text preview:\n`{current_text[:100]}...`\n\n"
         "Send the new help text (supports Markdown):",
-        reply_markup=keyboard,
-        parse_mode=ParseMode.MARKDOWN
+        query=query,
+        reply_markup=keyboard
     )
 
 async def handle_edit_start_image(query):
@@ -708,107 +858,62 @@ async def handle_edit_help_image(query):
 async def handle_edit_start_buttons(query):
     """Handle start buttons editing"""
     user_states[query.from_user.id] = UserState.AWAITING_START_BUTTONS
-    current_buttons = db.get_settings().start_message['buttons']
     
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("❌ Cancel", callback_data="settings")]
     ])
     
-    await query.edit_message_text(
+    await safe_edit_message(
         "🔘 **Edit Start Buttons**\n\n"
-        "Send new button configuration in format:\n"
-        "```\nButton Text - callback_data\nSecond Button - callback_data2\n```\n"
-        "Each line creates a new row of buttons.",
-        reply_markup=keyboard,
-        parse_mode=ParseMode.MARKDOWN
+        "**Button Format Guide:**\n"
+        "```\n"
+        "Button1 - callback_data | Button2 - http://example.com\n"
+        "Back - back | Next - next | Close - close\n"
+        "Info - This is the text that will be displayed\n"
+        "```\n\n"
+        "**Formats:**\n"
+        "• `Text - callback_data` - Regular button\n"
+        "• `Text - url` - URL button\n"
+        "• `Text - Text to display` - Text display button\n"
+        "• `back - back` - Back button\n"
+        "• `next - next` - Next button\n"
+        "• `close - close` - Close button\n"
+        "• Use `|` for same row\n"
+        "• New line for new row\n\n"
+        "Send new button configuration:",
+        query=query,
+        reply_markup=keyboard
     )
 
 async def handle_edit_help_buttons(query):
     """Handle help buttons editing"""
     user_states[query.from_user.id] = UserState.AWAITING_HELP_BUTTONS
-    current_buttons = db.get_settings().help_message['buttons']
     
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("❌ Cancel", callback_data="settings")]
     ])
     
-    await query.edit_message_text(
+    await safe_edit_message(
         "🔘 **Edit Help Buttons**\n\n"
-        "Send new button configuration in format:\n"
-        "```\nButton Text - callback_data\nSecond Button - callback_data2\n```\n"
-        "Each line creates a new row of buttons.",
-        reply_markup=keyboard,
-        parse_mode=ParseMode.MARKDOWN
+        "**Button Format Guide:**\n"
+        "```\n"
+        "Button1 - callback_data | Button2 - http://example.com\n"
+        "Back - back | Next - next | Close - close\n"
+        "Info - This is the text that will be displayed\n"
+        "```\n\n"
+        "**Formats:**\n"
+        "• `Text - callback_data` - Regular button\n"
+        "• `Text - url` - URL button\n"
+        "• `Text - Text to display` - Text display button\n"
+        "• `back - back` - Back button\n"
+        "• `next - next` - Next button\n"
+        "• `close - close` - Close button\n"
+        "• Use `|` for same row\n"
+        "• New line for new row\n\n"
+        "Send new button configuration:",
+        query=query,
+        reply_markup=keyboard
     )
-
-# Channel management functions
-async def show_channel_selection(update: Update, context: ContextTypes.DEFAULT_TYPE, action: str):
-    """Show channel selection for posting"""
-    try:
-        channels = db.get_channels()
-        keyboard_buttons = []
-        
-        for channel in list(channels.values())[:8]:
-            keyboard_buttons.append([
-                InlineKeyboardButton(f"📢 {channel.title}", callback_data=f"select_channel_{channel.chat_id}")
-            ])
-        
-        keyboard_buttons.append([InlineKeyboardButton("🔍 Search Channel", callback_data="search_channel")])
-        keyboard_buttons.append([InlineKeyboardButton("❌ Cancel", callback_data="cancel")])
-        
-        keyboard = InlineKeyboardMarkup(keyboard_buttons)
-        
-        await update.message.reply_text(
-            "📢 **Select a channel to post in:**\n\n"
-            "Choose from your connected channels:",
-            reply_markup=keyboard
-        )
-    except Exception as e:
-        logger.error(f"Error in show_channel_selection: {e}")
-        await update.message.reply_text("❌ Error loading channels. Please try again.")
-
-async def show_channel_selection_query(query, action: str):
-    """Show channel selection for query"""
-    try:
-        channels = db.get_channels()
-        keyboard_buttons = []
-        
-        for channel in list(channels.values())[:8]:
-            keyboard_buttons.append([
-                InlineKeyboardButton(f"📢 {channel.title}", callback_data=f"select_channel_{channel.chat_id}")
-            ])
-        
-        keyboard_buttons.append([InlineKeyboardButton("🔍 Search Channel", callback_data="search_channel")])
-        keyboard_buttons.append([InlineKeyboardButton("❌ Cancel", callback_data="cancel")])
-        
-        keyboard = InlineKeyboardMarkup(keyboard_buttons)
-        
-        await query.edit_message_text(
-            "📢 **Select a channel to post in:**\n\n"
-            "Choose from your connected channels:",
-            reply_markup=keyboard
-        )
-    except Exception as e:
-        logger.error(f"Error in show_channel_selection_query: {e}")
-        await query.edit_message_text("❌ Error loading channels. Please try again.")
-
-async def show_channel_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Display channel list"""
-    try:
-        channels = db.get_channels()
-        if not channels:
-            await update.message.reply_text("❌ No channels added yet. Use /addch to add channels.")
-            return
-        
-        channel_list = "\n".join([f"• **{channel.title}** (ID: `{channel.chat_id}`)" for channel in channels.values()])
-        
-        await update.message.reply_text(
-            f"📢 **Connected Channels**\n\n{channel_list}\n\n**Total:** {len(channels)} channels",
-            parse_mode=ParseMode.MARKDOWN
-        )
-    except Exception as e:
-        logger.error(f"Error in show_channel_list: {e}")
-        await update.message.reply_text("❌ Error loading channel list. Please try again.")
 
 # Message Handler for text inputs
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -930,16 +1035,13 @@ async def handle_save_help_image(update: Update, file_id: str):
 async def handle_save_start_buttons(update: Update, text: str):
     """Save new start buttons"""
     try:
-        # Parse button configuration
-        buttons = []
-        lines = text.strip().split('\n')
-        
-        for line in lines:
-            if '-' in line:
-                button_text, callback_data = line.split('-', 1)
-                buttons.append([[button_text.strip(), callback_data.strip()]])
+        buttons, button_texts = parse_button_config(text)
         
         if buttons:
+            # Save button texts to database
+            for button_id, text_content in button_texts.items():
+                db.set_button_text(button_id, text_content)
+            
             db.update_start_message(buttons=buttons)
             del user_states[update.effective_user.id]
             
@@ -949,13 +1051,14 @@ async def handle_save_start_buttons(update: Update, text: str):
             ])
             
             await update.message.reply_text(
-                "✅ **Start buttons updated successfully!**\n\n"
-                f"Added {len(buttons)} button rows.",
+                f"✅ **Start buttons updated successfully!**\n\n"
+                f"Added {len(buttons)} button rows.\n"
+                f"Saved {len(button_texts)} text display buttons.",
                 reply_markup=keyboard
             )
         else:
             await update.message.reply_text(
-                "❌ Invalid button format. Use: `Button Text - callback_data`"
+                "❌ Invalid button format. Please check the format guide and try again."
             )
     except Exception as e:
         logger.error(f"Error saving start buttons: {e}")
@@ -964,16 +1067,13 @@ async def handle_save_start_buttons(update: Update, text: str):
 async def handle_save_help_buttons(update: Update, text: str):
     """Save new help buttons"""
     try:
-        # Parse button configuration
-        buttons = []
-        lines = text.strip().split('\n')
-        
-        for line in lines:
-            if '-' in line:
-                button_text, callback_data = line.split('-', 1)
-                buttons.append([[button_text.strip(), callback_data.strip()]])
+        buttons, button_texts = parse_button_config(text)
         
         if buttons:
+            # Save button texts to database
+            for button_id, text_content in button_texts.items():
+                db.set_button_text(button_id, text_content)
+            
             db.update_help_message(buttons=buttons)
             del user_states[update.effective_user.id]
             
@@ -983,13 +1083,14 @@ async def handle_save_help_buttons(update: Update, text: str):
             ])
             
             await update.message.reply_text(
-                "✅ **Help buttons updated successfully!**\n\n"
-                f"Added {len(buttons)} button rows.",
+                f"✅ **Help buttons updated successfully!**\n\n"
+                f"Added {len(buttons)} button rows.\n"
+                f"Saved {len(button_texts)} text display buttons.",
                 reply_markup=keyboard
             )
         else:
             await update.message.reply_text(
-                "❌ Invalid button format. Use: `Button Text - callback_data`"
+                "❌ Invalid button format. Please check the format guide and try again."
             )
     except Exception as e:
         logger.error(f"Error saving help buttons: {e}")
@@ -1040,14 +1141,13 @@ async def forward_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     try:
         message = update.message
-        if not message.forward_origin or not isinstance(message.forward_origin, Chat):
+        
+        # Check if message is forwarded from a channel
+        if not message.forward_from_chat or message.forward_from_chat.type != ChatType.CHANNEL:
             await update.message.reply_text("❌ Please forward a message from a channel.")
             return
         
-        chat = message.forward_origin
-        if chat.type != ChatType.CHANNEL:
-            await update.message.reply_text("❌ Please forward a message from a channel, not a group or private chat.")
-            return
+        chat = message.forward_from_chat
         
         # Check if bot is admin in the channel with proper permissions
         try:
@@ -1064,7 +1164,7 @@ async def forward_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
             
             # Check if bot can post messages
-            if not bot_member.can_post_messages:
+            if not getattr(bot_member, 'can_post_messages', False):
                 await update.message.reply_text(
                     "⚠️ **Bot doesn't have permission to post messages in this channel.**\n\n"
                     "Please grant the bot 'Post Messages' permission in channel settings."
@@ -1105,6 +1205,75 @@ async def forward_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Unexpected error in forward_handler: {e}")
         await update.message.reply_text("❌ An unexpected error occurred. Please try again.")
+
+# Channel management functions
+async def show_channel_selection(update: Update, context: ContextTypes.DEFAULT_TYPE, action: str):
+    """Show channel selection for posting"""
+    try:
+        channels = db.get_channels()
+        keyboard_buttons = []
+        
+        for channel in list(channels.values())[:8]:
+            keyboard_buttons.append([
+                InlineKeyboardButton(f"📢 {channel.title}", callback_data=f"select_channel_{channel.chat_id}")
+            ])
+        
+        keyboard_buttons.append([InlineKeyboardButton("🔍 Search Channel", callback_data="search_channel")])
+        keyboard_buttons.append([InlineKeyboardButton("❌ Close", callback_data="close")])
+        
+        keyboard = InlineKeyboardMarkup(keyboard_buttons)
+        
+        await update.message.reply_text(
+            "📢 **Select a channel to post in:**\n\n"
+            "Choose from your connected channels:",
+            reply_markup=keyboard
+        )
+    except Exception as e:
+        logger.error(f"Error in show_channel_selection: {e}")
+        await update.message.reply_text("❌ Error loading channels. Please try again.")
+
+async def show_channel_selection_query(query, action: str):
+    """Show channel selection for query"""
+    try:
+        channels = db.get_channels()
+        keyboard_buttons = []
+        
+        for channel in list(channels.values())[:8]:
+            keyboard_buttons.append([
+                InlineKeyboardButton(f"📢 {channel.title}", callback_data=f"select_channel_{channel.chat_id}")
+            ])
+        
+        keyboard_buttons.append([InlineKeyboardButton("🔍 Search Channel", callback_data="search_channel")])
+        keyboard_buttons.append([InlineKeyboardButton("❌ Close", callback_data="close")])
+        
+        keyboard = InlineKeyboardMarkup(keyboard_buttons)
+        
+        await query.edit_message_text(
+            "📢 **Select a channel to post in:**\n\n"
+            "Choose from your connected channels:",
+            reply_markup=keyboard
+        )
+    except Exception as e:
+        logger.error(f"Error in show_channel_selection_query: {e}")
+        await query.edit_message_text("❌ Error loading channels. Please try again.")
+
+async def show_channel_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Display channel list"""
+    try:
+        channels = db.get_channels()
+        if not channels:
+            await update.message.reply_text("❌ No channels added yet. Use /addch to add channels.")
+            return
+        
+        channel_list = "\n".join([f"• **{channel.title}** (ID: `{channel.chat_id}`)" for channel in channels.values()])
+        
+        await update.message.reply_text(
+            f"📢 **Connected Channels**\n\n{channel_list}\n\n**Total:** {len(channels)} channels",
+            parse_mode=ParseMode.MARKDOWN
+        )
+    except Exception as e:
+        logger.error(f"Error in show_channel_list: {e}")
+        await update.message.reply_text("❌ Error loading channel list. Please try again.")
 
 # Setup handlers
 def setup_handlers():
@@ -1147,7 +1316,7 @@ def main():
         logger.error("BOT_TOKEN not found in environment variables!")
         return
     
-    logger.info("Starting Advanced Telegram Bot with JSON database...")
+    logger.info("Starting Advanced Telegram Bot with enhanced button system...")
     
     # Setup all handlers
     setup_handlers()
