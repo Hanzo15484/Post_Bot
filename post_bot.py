@@ -750,12 +750,10 @@ async def run():
     while True:
         await asyncio.sleep(3600)
 def main():
-    """Main function to run the bot"""
     import asyncio
-    
     try:
-        # Start the bot
-        asyncio.run(run())
+        bot_manager = BotManager(BOT_TOKEN)
+        asyncio.run(bot_manager.run())
     except KeyboardInterrupt:
         logger.info("Bot stopped by user")
     except Exception as e:
