@@ -14,6 +14,9 @@ from telegram.ext import (
 )
 from telegram.constants import ParseMode
 
+# Load environment variables
+load_dotenv("Bot_Token.env")  # Load variables from .env
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 # Configure logging
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -718,17 +721,41 @@ async def error_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE
             await update.effective_message.reply_text(
                 "❌ An error occurred. Please try again later."
             )
+# Create application with your specified timeouts
+application = (Application.builder()
+    .token(BOT_TOKEN)
+    .read_timeout(15)
+    .write_timeout(30)  
+    .connect_timeout(20)
+    .pool_timeout(20)
+    .build())
 
-# Bot initialization
+async def run():
+    """Start the bot with your specified running process"""
+    await load_admin_ids()
+    logger.info("Bot started successfully!")
+    await application.initialize()
+    await application.start()
+    await application.updater.start_polling()
+    
+    # Keep connection alive with shorter intervals for Termux  
+    if hasattr(application.updater, 'job_queue') and hasattr(application.updater.job_queue, 'scheduler'):
+        application.updater.job_queue.scheduler.configure(
+            timezone="UTC",
+            max_workers=2  # Reduce worker threads for Termux
+        )
+
 def main():
-    """Start the bot"""
-    # Replace with your bot token
-    BOT_TOKEN = "8136083827:AAFu9QFO_v4vSeqOmfhU_ScSk3NJXlhMNfc"
+    """Main function to run the bot"""
+    import asyncio
     
-    bot_manager = BotManager(BOT_TOKEN)
-    
-    print("🤖 Bot is starting...")
-    bot_manager.application.run_polling(allowed_updates=Update.ALL_TYPES)
+    try:
+        # Start the bot
+        asyncio.run(run())
+    except KeyboardInterrupt:
+        logger.info("Bot stopped by user")
+    except Exception as e:
+        logger.error(f"Error starting bot: {e}")
 
 if __name__ == "__main__":
     main()
