@@ -97,8 +97,8 @@ async def addch_forward_handler(update: Update, context: ContextTypes.DEFAULT_TY
     # Save channel in DB
     # --------------------------
     db.query(
-        "INSERT OR REPLACE INTO channels (channel_id, channel_title, owner_id, admin_id) VALUES (?, ?, ?, ?)",
-        (channel_id, channel_title, user_id, user_id),
+        "INSERT OR REPLACE INTO channels (channel_id, channel_title, owner_id) VALUES (?, ?, ?, ?)",
+        (channel_id, channel_title, user_id),
     )
 
     WAITING_ADD_CHANNEL.pop(user_id, None)
