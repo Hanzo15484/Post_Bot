@@ -13,7 +13,7 @@ ADDCH_FLAG = "waiting_to_add_channel"
 # --------------------- /addch --------------------- #
 async def addch_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    Context.user_data[ADDCH_FLAG] = True
+    context.user_data[ADDCH_FLAG] = True
 
     await update.message.reply_text(
         "🌸 Please **forward a message from your channel**.\n\n"
