@@ -16,7 +16,7 @@ from telegram.ext import (
 
 # Local modules (make sure these files exist in the same folder)
 import init_db
-from db_handler import db
+from global import db
 from start import start_handler, start_button_handler
 from help import help_handler, help_button_handler
 from admin import adminpanel_handler, is_limited, get_uptime  # get_uptime optional
