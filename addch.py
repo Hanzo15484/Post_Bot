@@ -24,38 +24,78 @@ async def addch_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ------------ Handle Forwarded Channel Message ------------ #
 async def addch_forward_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.effective_message
     user_id = update.effective_user.id
 
+    # Checking if user is in waiting state
     if user_id not in WAITING_ADD_CHANNEL:
         return
 
-    if not update.message.forward_from_chat:
-        await update.message.reply_text("❌ This is not forwarded from a channel.")
+    if not msg:
         return
 
-    ch = update.message.forward_from_chat
+    # --------------------------
+    #   SAFE FORWARD DETECTION
+    # --------------------------
+    origin_chat = None
 
-    if ch.type != "channel":
-        await update.message.reply_text("❌ Please forward from a **channel only**.")
+    # 1) Old-style Telegram forwards
+    origin_chat = getattr(msg, "forward_from_chat", None)
+
+    # 2) Some clients send channels via forward_from
+    if not origin_chat:
+        origin_chat = getattr(msg, "forward_from", None)
+
+    # 3) New API: forward_origin.chat
+    if not origin_chat:
+        forward_origin = getattr(msg, "forward_origin", None)
+        if forward_origin:
+            origin_chat = getattr(forward_origin, "chat", None)
+
+    # 4) anonymized forward (only forward_sender_name visible)
+    if not origin_chat:
+        if getattr(msg, "forward_sender_name", None):
+            await msg.reply_text(
+                "⚠️ This forwarded message hides the channel identity.\n"
+                "Forward a message **directly from the channel**, not anonymized."
+            )
+            return
+
+        await msg.reply_text("❌ This is not forwarded from a channel.")
         return
 
-    channel_id = ch.id
-    channel_title = ch.title
+    # --------------------------
+    # Channel validation
+    # --------------------------
+    if getattr(origin_chat, "type", "") != "channel":
+        await msg.reply_text("❌ Please forward from a **channel only**.")
+        return
 
-    # Check if bot is admin
+    channel_id = getattr(origin_chat, "id", None)
+    channel_title = getattr(origin_chat, "title", None) or "Unknown Channel"
+
+    if not channel_id:
+        await msg.reply_text("❌ Cannot read channel ID. Telegram did not include real channel data.")
+        return
+
+    # --------------------------
+    # Bot admin check
+    # --------------------------
     try:
         bot_status = await context.bot.get_chat_member(channel_id, context.bot.id)
         if bot_status.status not in ["administrator", "creator"]:
-            await update.message.reply_text(
+            await msg.reply_text(
                 "❌ I am **not an admin** in that channel.\n"
-                "Make me admin and try again."
+                "Please make me admin and try again."
             )
             return
     except Exception:
-        await update.message.reply_text("❌ Cannot access the channel.")
+        await msg.reply_text("❌ I cannot access that channel. Add me to the channel first.")
         return
 
-    # Save channel to DB
+    # --------------------------
+    # Save channel in DB
+    # --------------------------
     db.query(
         "INSERT OR REPLACE INTO channels (channel_id, channel_title, owner_id, admin_id) VALUES (?, ?, ?, ?)",
         (channel_id, channel_title, user_id, user_id),
@@ -63,9 +103,11 @@ async def addch_forward_handler(update: Update, context: ContextTypes.DEFAULT_TY
 
     WAITING_ADD_CHANNEL.pop(user_id, None)
 
-    await update.message.reply_text(
+    await msg.reply_text(
         f"🌸 Channel Added Successfully!\n\n"
-        f"**{channel_title}**\n`{channel_id}`", parse_mode="Markdown"
+        f"**{channel_title}**\n"
+        f"`{channel_id}`",
+        parse_mode="Markdown"
     )
 
 
