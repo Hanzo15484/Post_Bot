@@ -176,8 +176,10 @@ def register_handlers(app: Application):
     # If you need strict order, add handlers with explicit group numbers where needed.
 
     # Global catch-all (non-command messages) - lightweight no-op to keep event loop flowing
-    app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, lambda u, c: None),
-    group=10)
+async def noop(update, context):
+    return
+
+app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, noop), group=10)
     
 # Entrypoint
 def main():
