@@ -175,16 +175,12 @@ async def delch_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Module export
 def addch_module():
     return [
-        # commands should always come first (group 0)
         (CommandHandler("addch", addch_handler), 0),
         (CommandHandler("mychannels", mychannels_handler), 0),
         (CommandHandler("delch", delch_handler), 0),
 
-        # callback buttons (group 1)
         (CallbackQueryHandler(delch_button, pattern="^delch_"), 1),
         (CallbackQueryHandler(delch_button, pattern="delch_cancel"), 1),
 
-        # forward handler — must NOT block commands!
-        # group 3 so it runs last
         (MessageHandler(~filters.COMMAND, addch_forward_handler), 3),
     ]
