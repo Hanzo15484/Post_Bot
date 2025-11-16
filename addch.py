@@ -8,13 +8,12 @@ from telegram.ext import (
 )
 from db_handler import db
 
-WAITING_ADD_CHANNEL = {}  # Tracks users waiting to add channel
-
+ADDCH_FLAG = "waiting_to_add_channel"
 
 # --------------------- /addch --------------------- #
 async def addch_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    WAITING_ADD_CHANNEL[user_id] = True
+    Context.user_data[ADDCH_FLAG] = True
 
     await update.message.reply_text(
         "🌸 Please **forward a message from your channel**.\n\n"
@@ -31,7 +30,7 @@ async def addch_forward_handler(update: Update, context: ContextTypes.DEFAULT_TY
     user_id = update.effective_user.id
 
     # Only process if this user is waiting to add a channel
-    if user_id not in WAITING_ADD_CHANNEL:
+    if user_id not in ADDCH_FLAG:
         return
 
     if not msg:
@@ -94,16 +93,15 @@ async def addch_forward_handler(update: Update, context: ContextTypes.DEFAULT_TY
         (channel_id, channel_title, user_id)
     )
 
-    # Remove waiting status
-    WAITING_ADD_CHANNEL.pop(user_id, None)
-
+    context.user_data[ADDCH_FLAG] = False
+    
     await msg.reply_text(
         f"🌸 Channel Added Successfully!\n\n"
         f"**{channel_title}**\n"
         f"`{channel_id}`",
         parse_mode="Markdown"
         )
-
+    return False
 
 # --------------------- /mychannels --------------------- #
 async def mychannels_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
