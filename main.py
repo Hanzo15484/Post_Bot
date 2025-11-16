@@ -168,8 +168,8 @@ def register_handlers(app: Application):
     for h in addch_module():
         app.add_handler(h)
 
-    for h in post_module():
-        app.add_handler(h)
+    for name, handler, group in post_module():
+    app.add_handler(handler, group=group)
 
     # Allow modules' message handlers to run in proper order:
     # - Group numbers can be used when adding handlers via app.add_handler(handler, group=N)
