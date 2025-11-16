@@ -526,5 +526,5 @@ def post_module():
 
         (MessageHandler(filters.TEXT & ~filters.COMMAND, button_format_handler), 2),
 
-        (MessageHandler(~filters.COMMAND, user_message_handler), 3),
+        (MessageHandler(~filters.COMMAND, user_message_handler), 4),
     ]
