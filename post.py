@@ -518,12 +518,12 @@ async def button_format_handler(update: Update, context: ContextTypes.DEFAULT_TY
 # ----------------------------------------------------------
 def post_module():
     return [
-        ("post_cmd", CommandHandler("post", post_handler), 0),
+        (CommandHandler("post", post_handler), 0),
 
-        ("post_buttons", CallbackQueryHandler(post_button_handler, pattern="^(post_|page_)"), 1),
-        ("post_flow", CallbackQueryHandler(post_button_flow, pattern="^(addbtn_|sendpost_|sendmsg_)"), 1),
+        (CallbackQueryHandler(post_button_handler, pattern="^(post_|page_)"), 1),
+        (CallbackQueryHandler(post_button_flow, pattern="^(addbtn_|sendpost_|sendmsg_)"), 1),
 
-        ("format_handler", MessageHandler(filters.TEXT & ~filters.COMMAND, button_format_handler), 2),
+        (MessageHandler(filters.TEXT & ~filters.COMMAND, button_format_handler), 2),
 
-        ("user_handler", MessageHandler(~filters.COMMAND, user_message_handler), 3),
+        (MessageHandler(~filters.COMMAND, user_message_handler), 3),
     ]
