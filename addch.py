@@ -8,101 +8,90 @@ from telegram.ext import (
 )
 from db_handler import db
 
-ADDCH_FLAG = "waiting_to_add_channel"
+# Flag that tells when user is adding a channel
+ADDCH_FLAG = "add_channel_mode"
 
-# --------------------- /addch --------------------- #
+
+# -----------------------------------------------------------
+# /addch — Begin channel adding process
+# -----------------------------------------------------------
 async def addch_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
     context.user_data[ADDCH_FLAG] = True
 
     await update.message.reply_text(
-        "🌸 Please **forward a message from your channel**.\n\n"
-        "The bot must be an **admin** in that channel."
+        "🌸 Please forward **any message from the channel** you want to add.\n"
+        "Make sure I am an **admin** in that channel."
     )
 
 
-# ------------ Handle Forwarded Channel Message ------------ #
+# -----------------------------------------------------------
+# Detect forwarded channel & save it
+# -----------------------------------------------------------
 async def addch_forward_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    print("ADDCH FORWARD TRIGGERED")
     msg = update.effective_message
+
+    # If user is NOT in add-channel mode, ignore silently
     if not context.user_data.get(ADDCH_FLAG):
-        return False
+        return False  # do NOT block other modules
+
+    print("ADDCH FORWARD TRIGGERED")
+
     user_id = update.effective_user.id
-
-    # Only process if this user is waiting to add a channel
-        return
-
     if not msg:
-        return
+        return False
 
-    # ----------------------------------
-    # Safe Forward-From-Channel detection
-    # ----------------------------------
-    origin_chat = getattr(msg, "forward_from_chat", None)
+    # -------- detect channel forwarded message safely --------
+    origin = getattr(msg, "forward_from_chat", None)
 
-    if not origin_chat:
-        origin_chat = getattr(msg, "forward_from", None)
-
-    if not origin_chat:
+    if not origin:
         fo = getattr(msg, "forward_origin", None)
         if fo:
-            origin_chat = getattr(fo, "chat", None)
+            origin = getattr(fo, "chat", None)
 
-    if not origin_chat:
-        # anonymized forward
-        if getattr(msg, "forward_sender_name", None):
-            await msg.reply_text(
-                "⚠️ This forward hides the channel identity.\n"
-                "Please forward a message directly from the channel."
-            )
-            return False
-
-        await msg.reply_text("❌ This is not forwarded from a channel.")
+    if not origin:
+        await msg.reply_text("❌ This does not look like a channel forward.")
         return False
 
-    # Must be a channel forward
-    if getattr(origin_chat, "type", "") != "channel":
+    if origin.type != "channel":
         await msg.reply_text("❌ Please forward from a **channel only**.")
-        return
-
-    channel_id = getattr(origin_chat, "id", None)
-    channel_title = getattr(origin_chat, "title", None) or "Unknown Channel"
-
-    if not channel_id:
-        await msg.reply_text("❌ Cannot detect channel ID from this forwarded message.")
         return False
 
-    # ----------------------------------
-    # Bot admin check
-    # ----------------------------------
+    channel_id = origin.id
+    channel_title = origin.title or "Unknown Channel"
+
+    # -------- bot must be admin --------
     try:
-        bot_status = await context.bot.get_chat_member(channel_id, context.bot.id)
-        if bot_status.status not in ["administrator", "creator"]:
-            await msg.reply_text("❌ I am **not an admin** in that channel.")
+        member = await context.bot.get_chat_member(channel_id, context.bot.id)
+        if member.status not in ("administrator", "creator"):
+            await msg.reply_text("❌ I am not admin in that channel.")
             return False
     except:
-        await msg.reply_text("❌ I cannot access that channel. Add me to the channel first.")
+        await msg.reply_text("❌ I cannot access that channel. Add me as admin.")
         return False
 
-    # ----------------------------------
-    # Save channel into SQLite (correct!)
-    # ----------------------------------
+    # -------- save to DB --------
     db.query(
         "INSERT OR REPLACE INTO channels (channel_id, channel_title, owner_id) VALUES (?, ?, ?)",
         (channel_id, channel_title, user_id)
     )
 
+    # turn OFF add-channel mode
     context.user_data[ADDCH_FLAG] = False
-    print("ADDCH DISABLE")
+    print("ADDCH DISABLED")
+
     await msg.reply_text(
         f"🌸 Channel Added Successfully!\n\n"
         f"**{channel_title}**\n"
         f"`{channel_id}`",
         parse_mode="Markdown"
-        )
-    return False
+    )
 
-# --------------------- /mychannels --------------------- #
+    return False  # do NOT block post handlers
+
+
+# -----------------------------------------------------------
+# /mychannels — list user channels
+# -----------------------------------------------------------
 async def mychannels_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
 
@@ -112,17 +101,19 @@ async def mychannels_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
     )
 
     if not rows:
-        await update.message.reply_text("🌸 You have no channels saved.")
+        await update.message.reply_text("🌸 You have no saved channels.")
         return
 
-    text = "📢 **Your Channels:**\n\n"
-    for ch in rows:
-        text += f"- {ch[1]} (`{ch[0]}`)\n"
+    text = "📚 **Your Channels:**\n\n"
+    for cid, title in rows:
+        text += f"• **{title}** — `{cid}`\n"
 
     await update.message.reply_text(text, parse_mode="Markdown")
 
 
-# --------------------- /delch --------------------- #
+# -----------------------------------------------------------
+# /delch — show delete options
+# -----------------------------------------------------------
 async def delch_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
 
@@ -135,29 +126,31 @@ async def delch_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ No channels to delete.")
         return
 
-    kb = []
+    keyboard = []
     row = []
 
     for i, (cid, title) in enumerate(rows):
         row.append(InlineKeyboardButton(title, callback_data=f"delch_{cid}"))
         if (i + 1) % 2 == 0:
-            kb.append(row)
+            keyboard.append(row)
             row = []
     if row:
-        kb.append(row)
+        keyboard.append(row)
 
-    kb.append([InlineKeyboardButton("❌ Cancel", callback_data="delch_cancel")])
+    keyboard.append([InlineKeyboardButton("❌ Cancel", callback_data="delch_cancel")])
 
     await update.message.reply_text(
-        "Select a channel to delete:",
-        reply_markup=InlineKeyboardMarkup(kb)
+        "🗑 Select a channel to delete:",
+        reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
 
+# -----------------------------------------------------------
+# Handle delete callback
+# -----------------------------------------------------------
 async def delch_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     data = query.data
-
     await query.answer()
 
     if data == "delch_cancel":
@@ -165,14 +158,15 @@ async def delch_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data.startswith("delch_"):
-        cid = int(data.split("_")[1])
-        db.query("DELETE FROM channels WHERE channel_id = ?", (cid,))
-
-        await query.edit_message_text("🌸 Channel deleted successfully!")
+        channel_id = int(data.split("_")[1])
+        db.query("DELETE FROM channels WHERE channel_id = ?", (channel_id,))
+        await query.edit_message_text("🗑 Channel deleted successfully!")
         return
 
 
-# Module export
+# -----------------------------------------------------------
+# Handler export for main.py
+# -----------------------------------------------------------
 def addch_module():
     return [
         (CommandHandler("addch", addch_handler), 0),
@@ -182,5 +176,6 @@ def addch_module():
         (CallbackQueryHandler(delch_button, pattern="^delch_"), 1),
         (CallbackQueryHandler(delch_button, pattern="delch_cancel"), 1),
 
+        # IMPORTANT: addch forward handler MUST be non-blocking
         (MessageHandler(~filters.COMMAND, addch_forward_handler, block=False), 3),
     ]
