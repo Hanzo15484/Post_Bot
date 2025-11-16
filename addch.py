@@ -24,6 +24,7 @@ async def addch_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ------------ Handle Forwarded Channel Message ------------ #
 async def addch_forward_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    print("ADDCH FORWARD TRIGGERED")
     msg = update.effective_message
     user_id = update.effective_user.id
 
