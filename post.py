@@ -521,7 +521,7 @@ def post_module():
         CommandHandler("post", post_handler),
         CallbackQueryHandler(post_button_handler, pattern="^(post_|page_)"),
         CallbackQueryHandler(post_button_flow, pattern="^(addbtn_|sendpost_|sendmsg_)"),
-        MessageHandler(~filters.COMMAND, user_message_handler),
         MessageHandler(filters.TEXT, button_format_handler),
+        MessageHandler(~filters.COMMAND, user_message_handler),
   ]
   
