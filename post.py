@@ -14,7 +14,7 @@ from telegram.ext import (
     MessageHandler,
     filters,
 )
-from global import db
+from db_handler import db
 
 OWNER_ID = 5373577888
 
