@@ -27,46 +27,39 @@ async def addch_forward_handler(update: Update, context: ContextTypes.DEFAULT_TY
     msg = update.effective_message
     user_id = update.effective_user.id
 
-    # Checking if user is in waiting state
+    # Only process if this user is waiting to add a channel
     if user_id not in WAITING_ADD_CHANNEL:
         return
 
     if not msg:
         return
 
-    # --------------------------
-    #   SAFE FORWARD DETECTION
-    # --------------------------
-    origin_chat = None
-
-    # 1) Old-style Telegram forwards
+    # ----------------------------------
+    # Safe Forward-From-Channel detection
+    # ----------------------------------
     origin_chat = getattr(msg, "forward_from_chat", None)
 
-    # 2) Some clients send channels via forward_from
     if not origin_chat:
         origin_chat = getattr(msg, "forward_from", None)
 
-    # 3) New API: forward_origin.chat
     if not origin_chat:
-        forward_origin = getattr(msg, "forward_origin", None)
-        if forward_origin:
-            origin_chat = getattr(forward_origin, "chat", None)
+        fo = getattr(msg, "forward_origin", None)
+        if fo:
+            origin_chat = getattr(fo, "chat", None)
 
-    # 4) anonymized forward (only forward_sender_name visible)
     if not origin_chat:
+        # anonymized forward
         if getattr(msg, "forward_sender_name", None):
             await msg.reply_text(
-                "⚠️ This forwarded message hides the channel identity.\n"
-                "Forward a message **directly from the channel**, not anonymized."
+                "⚠️ This forward hides the channel identity.\n"
+                "Please forward a message directly from the channel."
             )
             return
 
         await msg.reply_text("❌ This is not forwarded from a channel.")
         return
 
-    # --------------------------
-    # Channel validation
-    # --------------------------
+    # Must be a channel forward
     if getattr(origin_chat, "type", "") != "channel":
         await msg.reply_text("❌ Please forward from a **channel only**.")
         return
@@ -75,32 +68,30 @@ async def addch_forward_handler(update: Update, context: ContextTypes.DEFAULT_TY
     channel_title = getattr(origin_chat, "title", None) or "Unknown Channel"
 
     if not channel_id:
-        await msg.reply_text("❌ Cannot read channel ID. Telegram did not include real channel data.")
+        await msg.reply_text("❌ Cannot detect channel ID from this forwarded message.")
         return
 
-    # --------------------------
+    # ----------------------------------
     # Bot admin check
-    # --------------------------
+    # ----------------------------------
     try:
         bot_status = await context.bot.get_chat_member(channel_id, context.bot.id)
         if bot_status.status not in ["administrator", "creator"]:
-            await msg.reply_text(
-                "❌ I am **not an admin** in that channel.\n"
-                "Please make me admin and try again."
-            )
+            await msg.reply_text("❌ I am **not an admin** in that channel.")
             return
-    except Exception:
+    except:
         await msg.reply_text("❌ I cannot access that channel. Add me to the channel first.")
         return
 
-    # --------------------------
-    # Save channel in DB
-    # --------------------------
+    # ----------------------------------
+    # Save channel into SQLite (correct!)
+    # ----------------------------------
     db.query(
-        "INSERT OR REPLACE INTO channels (channel_id, channel_title, owner_id) VALUES (?, ?, ?, ?)",
-        (channel_id, channel_title, user_id),
+        "INSERT OR REPLACE INTO channels (channel_id, channel_title, owner_id) VALUES (?, ?, ?)",
+        (channel_id, channel_title, user_id)
     )
 
+    # Remove waiting status
     WAITING_ADD_CHANNEL.pop(user_id, None)
 
     await msg.reply_text(
@@ -108,7 +99,7 @@ async def addch_forward_handler(update: Update, context: ContextTypes.DEFAULT_TY
         f"**{channel_title}**\n"
         f"`{channel_id}`",
         parse_mode="Markdown"
-    )
+        )
 
 
 # --------------------- /mychannels --------------------- #
