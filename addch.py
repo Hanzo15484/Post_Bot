@@ -94,7 +94,7 @@ async def addch_forward_handler(update: Update, context: ContextTypes.DEFAULT_TY
     )
 
     context.user_data[ADDCH_FLAG] = False
-    
+    print("ADDCH DISABLE")
     await msg.reply_text(
         f"🌸 Channel Added Successfully!\n\n"
         f"**{channel_title}**\n"
