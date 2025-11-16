@@ -26,6 +26,8 @@ async def addch_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def addch_forward_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     print("ADDCH FORWARD TRIGGERED")
     msg = update.effective_message
+    if not context.user_data.get(ADDCH_FLAG):
+        return False
     user_id = update.effective_user.id
 
     # Only process if this user is waiting to add a channel
@@ -55,10 +57,10 @@ async def addch_forward_handler(update: Update, context: ContextTypes.DEFAULT_TY
                 "⚠️ This forward hides the channel identity.\n"
                 "Please forward a message directly from the channel."
             )
-            return
+            return False
 
         await msg.reply_text("❌ This is not forwarded from a channel.")
-        return
+        return False
 
     # Must be a channel forward
     if getattr(origin_chat, "type", "") != "channel":
@@ -70,7 +72,7 @@ async def addch_forward_handler(update: Update, context: ContextTypes.DEFAULT_TY
 
     if not channel_id:
         await msg.reply_text("❌ Cannot detect channel ID from this forwarded message.")
-        return
+        return False
 
     # ----------------------------------
     # Bot admin check
@@ -79,10 +81,10 @@ async def addch_forward_handler(update: Update, context: ContextTypes.DEFAULT_TY
         bot_status = await context.bot.get_chat_member(channel_id, context.bot.id)
         if bot_status.status not in ["administrator", "creator"]:
             await msg.reply_text("❌ I am **not an admin** in that channel.")
-            return
+            return False
     except:
         await msg.reply_text("❌ I cannot access that channel. Add me to the channel first.")
-        return
+        return False
 
     # ----------------------------------
     # Save channel into SQLite (correct!)
