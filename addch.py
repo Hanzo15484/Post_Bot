@@ -182,5 +182,5 @@ def addch_module():
         (CallbackQueryHandler(delch_button, pattern="^delch_"), 1),
         (CallbackQueryHandler(delch_button, pattern="delch_cancel"), 1),
 
-        (MessageHandler(~filters.COMMAND, addch_forward_handler), 3),
+        (MessageHandler(~filters.COMMAND, addch_forward_handler, block=False), 3),
     ]
