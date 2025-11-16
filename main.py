@@ -176,7 +176,7 @@ def register_handlers(app: Application):
     # If you need strict order, add handlers with explicit group numbers where needed.
 
     # Global catch-all (non-command messages) - lightweight no-op to keep event loop flowing
-    app.add_handler(MessageHandler(filters.COMMAND, lambda u, c: None))
+    app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, lambda u, c: None))
 
 
 # -------------------------
