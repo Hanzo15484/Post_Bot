@@ -30,7 +30,6 @@ async def addch_forward_handler(update: Update, context: ContextTypes.DEFAULT_TY
     user_id = update.effective_user.id
 
     # Only process if this user is waiting to add a channel
-    if user_id not in ADDCH_FLAG:
         return
 
     if not msg:
