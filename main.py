@@ -165,9 +165,9 @@ def register_handlers(app: Application):
     app.add_handler(CommandHandler("removeadmin", removeadmin_handler))
 
     # Modules: addch and post (they return handler lists)
-    for h in addch_module():
-        app.add_handler(h)
-
+    for handler, group in addch_module():
+        app.add_handler(handler, group=group)
+    
     for name, handler, group in post_module():
         app.add_handler(handler, group=group)
 
