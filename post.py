@@ -218,6 +218,7 @@ async def post_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
 # Handle User Messages (Forwarded / New content)
 # ----------------------------------------------------------
 async def user_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    print("USER MESSAGE RECEIVED")
     user_id = update.effective_user.id
     if user_id != OWNER_ID:
         return
