@@ -6,7 +6,7 @@ from telegram.ext import (
     CallbackQueryHandler,
     filters
 )
-from global import db
+from db_handler import db
 
 WAITING_ADD_CHANNEL = {}  # Tracks users waiting to add channel
 
