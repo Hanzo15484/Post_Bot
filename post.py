@@ -397,19 +397,19 @@ async def post_button_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "addbtn_yes":
         session["step"] = "await_button_format"
 
-        txt = (
-            "🔘 *Add Button*\n\n"
-            "Send button in one of these formats:\n\n"
-            "• *URL Button:*\n"
-            "`Button Text - https://example.com`\n\n"
-            "• *URL Button (same row):*\n"
-            "`Button Text - https://example.com:same`\n\n"
-            "• *Alert Button:*\n"
-            "`Button Text - Alert Message:alert:true`\n\n"
-            "*Examples:*\n"
-            "`Visit Website - https://google.com`\n"
-            "`Join Channel - https://t.me/channel:same`\n"
-            "`Show Alert - Hello this is alert:alert:true`"
+    txt = (
+    "🔘 \\*Add Button\\*\\n\\n"
+    "Send button in one of these formats\\:\\n\\n"
+    "• \\*URL Button\\:\\*\\n"
+    "\\`Button Text \\- https\\:\\/\\/example\\.com\\`\\n\\n"
+    "• \\*URL Button \\(same row\\)\\:\\*\\n"
+    "\\`Button Text \\- https\\:\\/\\/example\\.com\\:same\\`\\n\\n"
+    "• \\*Alert Button\\:\\*\\n"
+    "\\`Button Text \\- Alert Message\\:alert\\:true\\`\\n\\n"
+    "\\*Examples\\:\\*\\n"
+    "\\`Visit Website \\- https\\:\\/\\/google\\.com\\`\\n"
+    "\\`Join Channel \\- https\\:\\/\\/t\\.me\\/channel\\:same\\`\\n"
+    "\\`Show Alert \\- Hello this is alert\\:alert\\:true\\`"
         )
 
         await query.edit_message_text(txt, parse_mode="MarkdownV2")
