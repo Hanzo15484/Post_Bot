@@ -24,14 +24,14 @@ USER_SESSION = {}
 PAGE_SIZE = 12    
 
 # ----------------------------------------------------------
-# Helper: Safe MarkdownV2 Escape with proper escaping
+# Helper: Safe MarkdownV2 Escape - FIXED VERSION
 # ----------------------------------------------------------
 def md(text: str) -> str:
     if not text:
         return ""
-    # Escape all special characters for MarkdownV2
-    special_chars = r'_*[]()~`>#+-=|{}.!'
-    for char in special_chars:
+    # Properly escape all MarkdownV2 reserved characters
+    escape_chars = r'_*[]()~`>#+-=|{}.!'
+    for char in escape_chars:
         text = text.replace(char, f'\\{char}')
     return text
 
