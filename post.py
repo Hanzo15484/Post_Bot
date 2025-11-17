@@ -556,13 +556,18 @@ async def button_format_handler(update: Update, context: ContextTypes.DEFAULT_TY
 # ----------------------------------------------------------
 def post_module():
     return [
+        # /post command
         (CommandHandler("post", post_handler), 0),
 
-        (CallbackQueryHandler(post_button_handler, pattern="^(post_|page_|edit_)"), 1),
+        # channel selection, page next/back
+        (CallbackQueryHandler(post_button_handler, pattern="^(post_ch_|page_|post_do_|edit_do_)"), 1),
 
+        # post flow yes/no/add/send
         (CallbackQueryHandler(post_button_flow, pattern="^(addbtn_|sendpost_|sendmsg_)"), 2),
 
+        # button format text
         (MessageHandler(filters.TEXT & ~filters.COMMAND, button_format_handler), 3),
 
+        # normal message handler (post/edit content)
         (MessageHandler(filters.ALL & ~filters.COMMAND, user_message_handler), 4),
-        ]
+    ]
