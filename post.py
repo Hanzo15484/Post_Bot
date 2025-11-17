@@ -397,22 +397,22 @@ async def post_button_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "addbtn_yes":
         session["step"] = "await_button_format"
 
-    txt = (
-    "🔘 \\*Add Button\\*\\n\\n"
-    "Send button in one of these formats\\:\\n\\n"
-    "• \\*URL Button\\:\\*\\n"
-    "\\`Button Text \\- https\\:\\/\\/example\\.com\\`\\n\\n"
-    "• \\*URL Button \\(same row\\)\\:\\*\\n"
-    "\\`Button Text \\- https\\:\\/\\/example\\.com\\:same\\`\\n\\n"
-    "• \\*Alert Button\\:\\*\\n"
-    "\\`Button Text \\- Alert Message\\:alert\\:true\\`\\n\\n"
-    "\\*Examples\\:\\*\\n"
-    "\\`Visit Website \\- https\\:\\/\\/google\\.com\\`\\n"
-    "\\`Join Channel \\- https\\:\\/\\/t\\.me\\/channel\\:same\\`\\n"
-    "\\`Show Alert \\- Hello this is alert\\:alert\\:true\\`"
+        txt = (
+            "🔘 \\*Add Button\\*\\n\\n"
+            "Send button in one of these formats\\:\\n\\n"
+            "• \\*URL Button\\:\\*\\n"
+            "\\`Button Text \\- https\\:\\/\\/example\\.com\\`\\n\\n"
+            "• \\*URL Button \\(same row\\)\\:\\*\\n"
+            "\\`Button Text \\- https\\:\\/\\/example\\.com\\:same\\`\\n\\n"
+            "• \\*Alert Button\\:\\*\\n"
+            "\\`Button Text \\- Alert Message\\:alert\\:true\\`\\n\\n"
+            "\\*Examples\\:\\*\\n"
+            "\\`Visit Website \\- https\\:\\/\\/google\\.com\\`\\n"
+            "\\`Join Channel \\- https\\:\\/\\/t\\.me\\/channel\\:same\\`\\n"
+            "\\`Show Alert \\- Hello this is alert\\:alert\\:true\\`"
         )
 
-     await query.edit_message_text(txt, parse_mode="MarkdownV2")
+        await query.edit_message_text(txt, parse_mode="MarkdownV2")
         return
 
     # No button → ask to send post
@@ -440,11 +440,11 @@ async def post_button_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
             content_type = "document"
 
         await query.edit_message_text(
-            f"📋 *Ready to {'Edit' if session['mode'] == 'edit' else 'Post'}*\n\n"
-            f"*Content Type:* {content_type}\n"
-            f"*Channel:* {md(session['channel_title'])}\n"
-            f"*Buttons:* {len(buttons)} added\n\n"
-            f"Proceed with {'editing' if session['mode'] == 'edit' else 'posting'}?",
+            f"📋 \\*Ready to {'Edit' if session['mode'] == 'edit' else 'Post'}\\*\\n\\n"
+            f"\\*Content Type\\:\\* {content_type}\\n"
+            f"\\*Channel\\:\\* {md(session['channel_title'])}\\n"
+            f"\\*Buttons\\:\\* {len(buttons)} added\\n\\n"
+            f"Proceed with {'editing' if session['mode'] == 'edit' else 'posting'}\\?",
             parse_mode="MarkdownV2",
             reply_markup=InlineKeyboardMarkup(kb)
         )
@@ -457,8 +457,8 @@ async def post_button_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         action = "post" if session["mode"] == "post" else "edit"
         await query.edit_message_text(
-            f"🔄 *Change Content*\n\n"
-            f"Please send the new content you want to {action}.",
+            f"🔄 \\*Change Content\\*\\n\\n"
+            f"Please send the new content you want to {action}\\.",
             parse_mode="MarkdownV2"
         )
         return
@@ -513,8 +513,8 @@ async def post_button_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     )
 
                 await query.edit_message_text(
-                    "✅ *Message edited successfully!*\n\n"
-                    f"Channel: {md(session['channel_title'])}",
+                    "✅ \\*Message edited successfully!\\*\\n\\n"
+                    f"Channel\\: {md(session['channel_title'])}",
                     parse_mode="MarkdownV2"
                 )
 
@@ -553,19 +553,19 @@ async def post_button_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     )
 
                 await query.edit_message_text(
-                    "✅ *Post sent successfully!*\n\n"
-                    f"Channel: {md(session['channel_title'])}",
+                    "✅ \\*Post sent successfully!\\*\\n\\n"
+                    f"Channel\\: {md(session['channel_title'])}",
                     parse_mode="MarkdownV2"
                 )
 
         except Exception as e:
             error_msg = str(e)
             await query.edit_message_text(
-                f"❌ *Error occurred*\n\n"
-                f"`{md(error_msg)}`\n\n"
-                f"Please check:\n"
-                f"• Bot admin rights in channel\n"
-                f"• Message formatting\n"
+                f"❌ \\*Error occurred\\*\\n\\n"
+                f"\\`{md(error_msg)}\\`\\n\\n"
+                f"Please check\\:\\n"
+                f"• Bot admin rights in channel\\n"
+                f"• Message formatting\\n"
                 f"• Button URLs validity",
                 parse_mode="MarkdownV2"
             )
