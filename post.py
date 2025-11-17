@@ -365,8 +365,8 @@ async def user_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         ]
 
         await update.message.reply_text(
-            "📝 *Content Received!*\n\n"
-            "Would you like to *add interactive buttons* to your message?",
+            "📝 *Content Received\\!*\n\n"
+            "Would you like to *add interactive buttons* to your message\\?",
             parse_mode="MarkdownV2",
             reply_markup=InlineKeyboardMarkup(kb)
         )
