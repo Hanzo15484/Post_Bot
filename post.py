@@ -412,7 +412,7 @@ async def post_button_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
     "\\`Show Alert \\- Hello this is alert\\:alert\\:true\\`"
         )
 
-        await query.edit_message_text(txt, parse_mode="MarkdownV2")
+     await query.edit_message_text(txt, parse_mode="MarkdownV2")
         return
 
     # No button → ask to send post
