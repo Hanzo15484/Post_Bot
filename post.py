@@ -63,7 +63,12 @@ async def send_channel_page(update_or_query, context, user_id):
     )
 
     if not rows:
-        await update_or_query.message.reply_text("❌ No channels saved. Add one using /addch.")
+        # NORMAL MESSAGE
+        if hasattr(update_or_query, "message") and update_or_query.message:
+            await update_or_query.message.reply_text("❌ No channels saved. Add one using /addch.")
+        else:
+            # CALLBACK
+            await update_or_query.edit_message_text("❌ No channels saved. Add one using /addch.")
         return
 
     total_pages = math.ceil(len(rows) / PAGE_SIZE)
@@ -75,9 +80,7 @@ async def send_channel_page(update_or_query, context, user_id):
     row = []
 
     for i, (cid, title) in enumerate(page_channels):
-        row.append(
-            InlineKeyboardButton(title, callback_data=f"post_ch_{cid}")
-        )
+        row.append(InlineKeyboardButton(title, callback_data=f"post_ch_{cid}"))
         if (i + 1) % 4 == 0:
             keyboard.append(row)
             row = []
@@ -85,6 +88,7 @@ async def send_channel_page(update_or_query, context, user_id):
     if row:
         keyboard.append(row)
 
+    # Pagination
     nav = []
     if page > 0:
         nav.append(InlineKeyboardButton("⬅ Back", callback_data="page_back"))
@@ -97,15 +101,23 @@ async def send_channel_page(update_or_query, context, user_id):
 
     text = f"📢 Select a channel (Page {page+1}/{total_pages}):"
 
-    if hasattr(update_or_query, "message"):
-        await update_or_query.message.reply_text(text)
-    else:
-        await update_or_query.edit_message_text(text)
+    # -------------------------------------------
+    # CASE 1: Called from /post → it's a message
+    # -------------------------------------------
+    if hasattr(update_or_query, "message") and update_or_query.message:
+        await update_or_query.message.reply_text(
+            text,
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return
 
-    await update_or_query.edit_message_reply_markup(
-        InlineKeyboardMarkup(keyboard)
-    )
-
+    # -------------------------------------------
+    # CASE 2: Called from callback → edit message
+    # -------------------------------------------
+    await update_or_query.edit_message_text(
+        text,
+        reply_markup=InlineKeyboardMarkup(keyboard)
+           )
 
 # ----------------------------------------------------------
 # Handle Buttons
